@@ -1,0 +1,369 @@
+"""
+ticker_picker.py
+────────────────
+Drop-in ticker selection GUI for the IT Dashboard.
+Returns (selected_tickers, years_back) tuple.
+"""
+
+import os
+import sqlite3
+import tkinter as tk
+from tkinter import ttk, font as tkfont
+
+
+CLR_ACCENT  = "#00A4EF"
+CLR_BG      = "#F7F9FC"
+CLR_ROW_A   = "#FFFFFF"
+CLR_ROW_B   = "#EFF4FA"
+CLR_TEXT    = "#1A1A2E"
+CLR_SUBTEXT = "#555577"
+CLR_BTN_FG  = "#FFFFFF"
+
+TICK_FONT_SIZE = 16
+ROW_PADY       = 0
+ROW_PADX       = 8
+WINDOW_WIDTH   = 660
+WINDOW_HEIGHT  = 0.88
+WINDOW_X       = None
+WINDOW_Y       = 20
+YEARS_DEFAULT  = 11
+
+
+def pick_tickers(db_path: str) -> tuple[list[str], int]:
+    available: list[tuple[str, str]] = []
+
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            rows = conn.execute(
+                "SELECT symbol, name FROM tickers ORDER BY symbol"
+            ).fetchall()
+            conn.close()
+            available = [(r[0], r[1] or r[0]) for r in rows]
+        except Exception:
+            pass
+
+    if not available:
+        return _manual_entry_fallback()
+
+    result_tickers: list[str] = []
+    result_years:   int       = YEARS_DEFAULT
+
+    root = tk.Tk()
+    root.title("📈  Select Tickers")
+    root.configure(bg=CLR_BG)
+    root.resizable(True, True)
+
+    root.update_idletasks()
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    w = WINDOW_WIDTH
+    h = int(sh * WINDOW_HEIGHT)
+    x = (sw - w) // 2 if WINDOW_X is None else WINDOW_X
+    root.geometry(f"{w}x{h}+{x}+{WINDOW_Y}")
+    root.minsize(500, 400)
+
+    mono      = tkfont.Font(family="Consolas", size=11)
+    bold      = tkfont.Font(family="Consolas", size=11, weight="bold")
+    hdr_bold  = tkfont.Font(family="Consolas", size=13, weight="bold")
+    hdr_sub   = tkfont.Font(family="Consolas", size=10)
+    sel_font  = tkfont.Font(family="Consolas", size=11, weight="bold")
+    tick_font = tkfont.Font(family="Segoe UI Symbol", size=TICK_FONT_SIZE)
+
+    # ── Header ────────────────────────────────────────────────────────────
+    hdr = tk.Frame(root, bg=CLR_ACCENT, pady=12)
+    hdr.pack(fill="x")
+    tk.Label(hdr, text="Fundamentals Dashboard",
+             bg=CLR_ACCENT, fg="white", font=hdr_bold).pack()
+    tk.Label(hdr, text="Choose tickers to chart",
+             bg=CLR_ACCENT, fg="#D0EEFF", font=hdr_sub).pack()
+
+    # ── Selected tickers summary bar ──────────────────────────────────────
+    summary_frame = tk.Frame(root, bg="#E8F4FD", pady=6, padx=14)
+    summary_frame.pack(fill="x")
+    tk.Label(summary_frame, text="Selected: ", bg="#E8F4FD",
+             fg=CLR_SUBTEXT, font=bold).pack(side="left")
+    summary_var = tk.StringVar(value="—")
+    tk.Label(summary_frame, textvariable=summary_var, bg="#E8F4FD",
+             fg=CLR_ACCENT, font=sel_font, anchor="w",
+             wraplength=520, justify="left").pack(side="left", fill="x", expand=True)
+
+    # ── Search bar ────────────────────────────────────────────────────────
+    search_frame = tk.Frame(root, bg=CLR_BG, pady=8, padx=14)
+    search_frame.pack(fill="x")
+    tk.Label(search_frame, text="🔍  Search / Add:", bg=CLR_BG,
+             fg=CLR_TEXT, font=bold).pack(side="left")
+    search_var = tk.StringVar()
+    search_entry = tk.Entry(search_frame, textvariable=search_var,
+                            font=mono, relief="flat", bg="white", fg=CLR_TEXT,
+                            insertbackground=CLR_ACCENT,
+                            highlightthickness=1,
+                            highlightcolor=CLR_ACCENT,
+                            highlightbackground="#CCCCCC")
+    search_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
+    search_entry.focus_set()
+
+    # ── Scrollable list ───────────────────────────────────────────────────
+    list_outer = tk.Frame(root, bg=CLR_BG, padx=14)
+    list_outer.pack(fill="both", expand=True)
+
+    # "Add as new" button — lives inside list_outer, hidden until needed
+    add_new_btn = tk.Button(list_outer, text="", bg="#E06C00", fg="white",
+                            font=bold, relief="flat", padx=12, pady=6,
+                            cursor="hand2")
+    # (command wired below after _add_new_ticker is defined)
+
+    canvas = tk.Canvas(list_outer, bg=CLR_BG, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(list_outer, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    inner = tk.Frame(canvas, bg=CLR_BG)
+    canvas_window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def _on_canvas_resize(event):
+        canvas.itemconfig(canvas_window, width=event.width)
+    canvas.bind("<Configure>", _on_canvas_resize)
+
+    def _on_frame_resize(event):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+    inner.bind("<Configure>", _on_frame_resize)
+
+    def _scroll(event):
+        if event.num == 4:
+            canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            canvas.yview_scroll(1, "units")
+        else:
+            canvas.yview_scroll(int(-event.delta / 60), "units")
+    canvas.bind_all("<MouseWheel>", _scroll)
+    canvas.bind_all("<Button-4>",   _scroll)
+    canvas.bind_all("<Button-5>",   _scroll)
+
+    check_vars:   dict[str, tk.BooleanVar] = {}
+    row_frames:   dict[str, tk.Frame]      = {}
+    tick_buttons: dict[str, tk.Button]     = {}
+
+    def _make_toggle(v, b):
+        def _toggle():
+            v.set(not v.get())
+            b.config(text="☑" if v.get() else "☐",
+                     fg=CLR_ACCENT if v.get() else "#AAAAAA")
+        return _toggle
+
+    for i, (sym, name) in enumerate(available):
+        var = tk.BooleanVar(value=False)
+        check_vars[sym] = var
+
+        bg = CLR_ROW_A if i % 2 == 0 else CLR_ROW_B
+        row = tk.Frame(inner, bg=bg, pady=ROW_PADY, padx=ROW_PADX)
+        row.pack(fill="x")
+        row_frames[sym] = row
+
+        btn = tk.Button(row, text="☐", font=tick_font,
+                        fg="#AAAAAA", bg=bg, activebackground=bg,
+                        relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+        btn.pack(side="left")
+        tick_buttons[sym] = btn
+        btn.config(command=_make_toggle(var, btn))
+
+        tk.Label(row, text=f"{sym:<8}", font=bold,
+                 bg=bg, fg=CLR_ACCENT, anchor="w").pack(side="left")
+        tk.Label(row, text=name, font=mono,
+                 bg=bg, fg=CLR_SUBTEXT, anchor="w").pack(side="left", fill="x")
+
+    # ── Summary + count update ─────────────────────────────────────────────
+    def _update_summary(*_):
+        selected = [sym for sym, v in check_vars.items() if v.get()]
+        summary_var.set(", ".join(selected) if selected else "—")
+
+    def _update_count(*_):
+        n = sum(v.get() for v in check_vars.values())
+        count_var.set(f"{n} selected")
+
+    for v in check_vars.values():
+        v.trace_add("write", _update_summary)
+        v.trace_add("write", _update_count)
+
+    # ── Add new ticker ────────────────────────────────────────────────────
+    def _add_new_ticker():
+        sym = search_var.get().strip().upper()
+        if not sym:
+            return
+        if sym not in check_vars:
+            var = tk.BooleanVar(value=True)
+            check_vars[sym] = var
+
+            bg = CLR_ROW_A if len(check_vars) % 2 == 0 else CLR_ROW_B
+            row = tk.Frame(inner, bg=bg, pady=ROW_PADY, padx=ROW_PADX)
+            row.pack(fill="x")
+            row_frames[sym] = row
+
+            btn = tk.Button(row, text="☑", font=tick_font,
+                            fg=CLR_ACCENT, bg=bg, activebackground=bg,
+                            relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+            btn.pack(side="left")
+            tick_buttons[sym] = btn
+            btn.config(command=_make_toggle(var, btn))
+
+            tk.Label(row, text=f"{sym:<8}", font=bold,
+                     bg=bg, fg="#E06C00", anchor="w").pack(side="left")
+            tk.Label(row, text="(new — will download)", font=mono,
+                     bg=bg, fg=CLR_SUBTEXT, anchor="w").pack(side="left")
+
+            var.trace_add("write", _update_summary)
+            var.trace_add("write", _update_count)
+        else:
+            check_vars[sym].set(True)
+            if sym in tick_buttons:
+                tick_buttons[sym].config(text="☑", fg=CLR_ACCENT)
+
+        search_var.set("")
+        add_new_btn.pack_forget()
+        _update_summary()
+        _update_count()
+
+    add_new_btn.config(command=_add_new_ticker)
+
+    # ── Filter ────────────────────────────────────────────────────────────
+    def _apply_filter(*_):
+        q = search_var.get().strip().upper()
+        any_visible = False
+        for sym, name in available:
+            if not q or q in sym.upper() or q in name.upper():
+                row_frames[sym].pack(fill="x")
+                any_visible = True
+            else:
+                row_frames[sym].pack_forget()
+        canvas.yview_moveto(0)
+
+        if q and not any_visible and 1 <= len(q) <= 6:
+            add_new_btn.config(text=f"＋  Add \"{q}\" as new ticker")
+            add_new_btn.pack(fill="x", pady=4)
+        else:
+            add_new_btn.pack_forget()
+
+    search_var.trace_add("write", _apply_filter)
+
+    # ── Bottom bar ────────────────────────────────────────────────────────
+    ctrl = tk.Frame(root, bg=CLR_BG, pady=10, padx=14)
+    ctrl.pack(fill="x")
+
+    btn_cfg = dict(font=bold, relief="flat", bd=0, padx=12, pady=7, cursor="hand2")
+
+    def _sync_all_buttons():
+        for sym, v in check_vars.items():
+            if sym in tick_buttons:
+                tick_buttons[sym].config(
+                    text="☑" if v.get() else "☐",
+                    fg=CLR_ACCENT if v.get() else "#AAAAAA"
+                )
+
+    def _select_all():
+        for sym in list(row_frames):
+            if row_frames[sym].winfo_ismapped():
+                check_vars[sym].set(True)
+        _sync_all_buttons()
+
+    def _clear_all():
+        for v in check_vars.values():
+            v.set(False)
+        _sync_all_buttons()
+
+    tk.Button(ctrl, text="✔  Select All", bg="#10B981", fg=CLR_BTN_FG,
+              activebackground="#0D9E6E",
+              command=_select_all, **btn_cfg).pack(side="left", padx=(0, 8))
+    tk.Button(ctrl, text="✖  Clear All", bg="#EF4444", fg=CLR_BTN_FG,
+              activebackground="#CC3333",
+              command=_clear_all, **btn_cfg).pack(side="left")
+
+    count_var = tk.StringVar(value="0 selected")
+    tk.Label(ctrl, textvariable=count_var, bg=CLR_BG,
+             fg=CLR_SUBTEXT, font=mono).pack(side="left", padx=14)
+
+    # ── Years selector ────────────────────────────────────────────────────
+    years_frame = tk.Frame(ctrl, bg=CLR_BG)
+    years_frame.pack(side="left", padx=(0, 14))
+    tk.Label(years_frame, text="History:", bg=CLR_BG,
+             fg=CLR_SUBTEXT, font=bold).pack(side="left", padx=(0, 6))
+    years_var = tk.StringVar(value=str(YEARS_DEFAULT))
+    tk.Entry(years_frame, textvariable=years_var, font=mono,
+             width=4, relief="flat",
+             highlightthickness=1,
+             highlightcolor=CLR_ACCENT,
+             highlightbackground="#CCCCCC").pack(side="left")
+    tk.Label(years_frame, text="yrs", bg=CLR_BG,
+             fg=CLR_SUBTEXT, font=mono).pack(side="left", padx=(4, 0))
+
+    # ── Go button ─────────────────────────────────────────────────────────
+    def _go():
+        nonlocal result_tickers, result_years
+        result_tickers = [sym for sym, v in check_vars.items() if v.get()]
+        try:
+            result_years = max(1, int(years_var.get()))
+        except ValueError:
+            result_years = YEARS_DEFAULT
+        root.destroy()
+
+    tk.Button(ctrl, text="▶  Go", bg=CLR_ACCENT, fg=CLR_BTN_FG,
+              activebackground="#0082C8",
+              command=_go, **btn_cfg).pack(side="right")
+
+    root.bind("<Return>", lambda e: _go())
+    root.mainloop()
+    return result_tickers, result_years
+
+
+def _manual_entry_fallback() -> tuple[list[str], int]:
+    result_tickers: list[str] = []
+    result_years:   int       = YEARS_DEFAULT
+
+    root = tk.Tk()
+    root.title("Enter Tickers")
+    root.configure(bg=CLR_BG)
+    root.resizable(False, False)
+    root.geometry("440x220")
+    root.eval("tk::PlaceWindow . center")
+
+    mono = tkfont.Font(family="Consolas", size=11)
+    bold = tkfont.Font(family="Consolas", size=11, weight="bold")
+
+    tk.Label(root,
+             text="No saved tickers found.\nEnter symbols separated by commas:",
+             bg=CLR_BG, fg=CLR_TEXT, font=bold, pady=14).pack()
+
+    entry_var = tk.StringVar()
+    entry = tk.Entry(root, textvariable=entry_var, font=mono,
+                     width=36, relief="flat",
+                     highlightthickness=1,
+                     highlightcolor=CLR_ACCENT,
+                     highlightbackground="#CCCCCC")
+    entry.pack(pady=4)
+    entry.focus_set()
+
+    yf = tk.Frame(root, bg=CLR_BG)
+    yf.pack(pady=6)
+    tk.Label(yf, text="History:", bg=CLR_BG, fg=CLR_TEXT, font=bold).pack(side="left", padx=(0, 6))
+    years_var = tk.StringVar(value=str(YEARS_DEFAULT))
+    tk.Entry(yf, textvariable=years_var, font=mono,
+             width=4, relief="flat",
+             highlightthickness=1,
+             highlightcolor=CLR_ACCENT,
+             highlightbackground="#CCCCCC").pack(side="left")
+    tk.Label(yf, text="yrs", bg=CLR_BG, fg=CLR_TEXT, font=mono).pack(side="left", padx=(4, 0))
+
+    def _go():
+        nonlocal result_tickers, result_years
+        result_tickers = [s.strip().upper() for s in entry_var.get().split(",") if s.strip()]
+        try:
+            result_years = max(1, int(years_var.get()))
+        except ValueError:
+            result_years = YEARS_DEFAULT
+        root.destroy()
+
+    tk.Button(root, text="▶  Go", bg=CLR_ACCENT, fg="white",
+              font=bold, relief="flat", padx=16, pady=8,
+              command=_go).pack(pady=10)
+    root.bind("<Return>", lambda e: _go())
+    root.mainloop()
+    return result_tickers, result_years
