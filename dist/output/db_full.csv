@@ -1,0 +1,5 @@
+symbol,name,fiscal_year,current_price,analyst_tp,analyst_low,analyst_high,consensus,last_updated,price,eps,pe,roe,bvps,debt_assets,ocfps,fcfps,revps,divps
+MSFT,Microsoft Corporation,2022,450.24,560.6302,400.0,870.0,Strong Buy,2026-05-31T14:40:14,233.18,9.65,24.16,43.68,22.0878,0.1679,11.8084,8.6405,26.2958,2.54
+MSFT,Microsoft Corporation,2023,450.24,560.6302,400.0,870.0,Strong Buy,2026-05-31T14:40:14,368.87,9.68,38.11,35.09,27.5994,0.1456,11.7214,7.9597,28.3612,2.79
+MSFT,Microsoft Corporation,2024,450.24,560.6302,400.0,870.0,Strong Buy,2026-05-31T14:40:14,416.56,11.8,35.3,32.83,35.9455,0.1311,15.872,9.9171,32.8186,3.08
+MSFT,Microsoft Corporation,2025,450.24,560.6302,400.0,870.0,Strong Buy,2026-05-31T14:40:14,481.48,13.64,35.3,29.65,46.0119,0.0979,18.2401,9.5929,37.7393,3.4
