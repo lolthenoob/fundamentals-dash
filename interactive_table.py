@@ -69,6 +69,23 @@ def _cagr(prices, n):
         return None
     return round(((end / start) ** (1 / n) - 1) * 100, 2)
 
+def _shorten_etf_name(name):
+    """Strip boilerplate from well-known ETF name templates."""
+    import re
+    # State Street SPDR sector ETFs — extract the sector keyword(s)
+    m = re.search(r'State Street (.+?) Select Sector', name)
+    if m:
+        return "SPDR " + m.group(1)
+    # Vanguard — prefix with VG and strip Index Fund / ETF suffix boilerplate
+    m = re.search(r'Vanguard (.+?)(?:\s+Index Fund|\s+ETF)', name)
+    if m:
+        return "VG " + m.group(1)
+    # iShares — prefix with iSh and strip ETF suffix
+    m = re.search(r'iShares (.+?)(?:\s+ETF)', name)
+    if m:
+        return "iSh " + m.group(1)
+    return name
+
 
 # ── Core sortable table window ────────────────────────────────────────────────
 
@@ -416,7 +433,9 @@ def show_etf_table(etf_list, colors, years_back):
         row = {}
 
         # Name
-        row["name"] = _cell(d.get("name", ""), d.get("name", ""), CLR_NAME)
+        _raw_name = d.get("name", "")
+        _short_name = _shorten_etf_name(_raw_name)
+        row["name"] = _cell(_short_name, _short_name, CLR_NAME)
 
         # CAGR columns
         for p in periods:
