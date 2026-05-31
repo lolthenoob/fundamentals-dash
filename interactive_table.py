@@ -492,15 +492,20 @@ def show_etf_table(etf_list, colors, years_back):
 
         # Yield %
         try:
-            latest_dist = next(
-                (d["distributions"][i]
-                 for i in range(len(d["years"]) - 1, -1, -1)
-                 if d["distributions"][i] is not None and d["distributions"][i] > 0),
-                None,
+            current_yr = d["years"][-1]
+            prior_yr   = current_yr - 1
+            annual_dist = sum(
+                dist for yr, dist in zip(d["years"], d["distributions"])
+                if yr == prior_yr and dist is not None
             )
+            if annual_dist == 0:
+                annual_dist = sum(
+                    dist for yr, dist in zip(d["years"], d["distributions"])
+                    if yr == current_yr and dist is not None
+                )
             cur_price = d.get("current_price")
-            if latest_dist and cur_price and cur_price > 0:
-                yp = round(latest_dist / cur_price * 100, 2)
+            if annual_dist and cur_price and cur_price > 0:
+                yp = round(annual_dist / cur_price * 100, 2)
                 row["yield_pct"] = _cell(f"{yp:.2f}%", yp, CLR_NAME)
             else:
                 row["yield_pct"] = _cell("N/A", None, CLR_NEUTRAL)

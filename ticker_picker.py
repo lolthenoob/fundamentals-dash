@@ -735,7 +735,20 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
             result_years = YEARS_DEFAULT
         result_refresh = refresh_var.get()
         result_export  = export_var.get()
-        root.destroy()
+
+        if not result_tickers:
+            return  # nothing selected, stay open
+
+        # Hide all picker widgets, reveal status panel
+        hdr.pack_forget()
+        summary_frame.pack_forget()
+        toggle_frame.pack_forget()
+        search_frame.pack_forget()
+        list_outer.pack_forget()
+        ctrl.pack_forget()
+        status_panel.pack(fill="both", expand=True)
+        root.update_idletasks()
+        root.quit()   # exit mainloop but keep window alive
 
     def _make_toggle_btn(frame, label, var, side="right", padx=(0, 8)):
         container = tk.Frame(frame, bg=CLR_BG)
@@ -760,9 +773,89 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
     _make_toggle_btn(ctrl, "Re-download", refresh_var, side="right", padx=(0, 8))
     _make_toggle_btn(ctrl, "Export files", export_var,  side="right", padx=(0, 8))
 
+    # ── Status panel (hidden until Go is pressed) ─────────────────────────
+    status_panel = tk.Frame(root, bg=CLR_BG)
+
+    status_hdr = tk.Frame(status_panel, bg=CLR_ACCENT, pady=12)
+    status_hdr.pack(fill="x")
+    tk.Label(status_hdr, text="Fundamentals Dashboard",
+             bg=CLR_ACCENT, fg="white", font=hdr_bold).pack()
+    status_title_var = tk.StringVar(value="Loading…")
+    tk.Label(status_hdr, textvariable=status_title_var,
+             bg=CLR_ACCENT, fg="#D0EEFF", font=hdr_sub).pack()
+
+    log_outer = tk.Frame(status_panel, bg=CLR_BG, padx=20, pady=10)
+    log_outer.pack(fill="both", expand=True)
+    log_text = tk.Text(
+        log_outer,
+        font=("Consolas", 11),
+        bg="white", fg=CLR_TEXT,
+        relief="flat",
+        state="disabled",
+        wrap="word",
+        highlightthickness=1,
+        highlightbackground="#CCCCCC",
+    )
+    log_scroll = ttk.Scrollbar(log_outer, command=log_text.yview)
+    log_text.configure(yscrollcommand=log_scroll.set)
+    log_scroll.pack(side="right", fill="y")
+    log_text.pack(fill="both", expand=True)
+
+    status_bottom = tk.Frame(status_panel, bg=CLR_BG, pady=10, padx=20)
+    status_bottom.pack(fill="x")
+    run_again_btn = tk.Button(
+        status_bottom,
+        text="↺  Run Again",
+        bg=CLR_ACCENT, fg="white",
+        font=bold, relief="flat", padx=16, pady=8,
+        cursor="hand2",
+    )
+
+    def _run_again():
+        nonlocal result_tickers, result_years, result_refresh, result_export
+        result_tickers = []
+        run_again_btn.pack_forget()
+        status_panel.pack_forget()
+        for v in check_vars.values():
+            v.set(False)
+        _sync_all_buttons()
+        _update_summary()
+        _update_count()
+        search_var.set("")
+        refresh_var.set(False)
+        export_var.set(False)
+        log_text.configure(state="normal")
+        log_text.delete("1.0", "end")
+        log_text.configure(state="disabled")
+        status_title_var.set("Loading…")
+        hdr.pack(fill="x")
+        summary_frame.pack(fill="x")
+        toggle_frame.pack(fill="x")
+        search_frame.pack(fill="x")
+        list_outer.pack(fill="both", expand=True)
+        ctrl.pack(fill="x")
+        root.update_idletasks()
+        root.mainloop()
+
+    run_again_btn.config(command=_run_again)
+
     root.bind("<Return>", lambda e: _go())
     root.mainloop()
-    return result_tickers, result_years, result_refresh, result_export
+    return result_tickers, result_years, result_refresh, result_export, root, log_text, status_title_var, run_again_btn, status_bottom
+
+
+def post_status(log_text, status_title_var, message, title=None):
+    """
+    Append a line to the status window log and optionally update the subtitle.
+    Safe to call from the main thread (not threaded).
+    """
+    if title:
+        status_title_var.set(title)
+    log_text.configure(state="normal")
+    log_text.insert("end", message + "\n")
+    log_text.see("end")
+    log_text.configure(state="disabled")
+    log_text.update_idletasks()
 
 
 # ── Manual entry fallback (no DB) ─────────────────────────────────────────────

@@ -14,7 +14,7 @@ CONFIGURE YOUR TICKERS HERE:
 'YEARS_BACK = 11'
 
 # ─────────────────────────────────────────────────────────────────────────────
-from ticker_picker import pick_tickers
+from ticker_picker import pick_tickers, post_status
 from interactive_table import show_stock_table, show_etf_table
 import warnings
 warnings.filterwarnings("ignore")
@@ -1275,28 +1275,19 @@ def plot_etf_table(etf_list, colors, years_back):
             row.append("N/A"); colors_row.append("#F0F0F0")
 
         try:
-            current_yr = d["years"][-1]
-            prior_yr = current_yr - 1
-            annual_dist = sum(
-                dist for yr, dist in zip(d["years"], d["distributions"])
-                if yr == prior_yr and dist is not None
+            latest_dist = next(
+                (d["distributions"][i] for i in range(len(d["years"]) - 1, -1, -1)
+                 if d["distributions"][i] is not None and d["distributions"][i] > 0),
+                None
             )
-            if annual_dist == 0:
-                annual_dist = sum(
-                    dist for yr, dist in zip(d["years"], d["distributions"])
-                    if yr == current_yr and dist is not None
-                )
             cur_price = d.get("current_price")
-            if annual_dist and cur_price and cur_price > 0:
-                yield_pct = round(annual_dist / cur_price * 100, 2)
-                row.append(f"{yield_pct:.2f}%");
-                colors_row.append("#EAF4FB")
+            if latest_dist and cur_price and cur_price > 0:
+                yield_pct = round(latest_dist / cur_price * 100, 2)
+                row.append(f"{yield_pct:.2f}%"); colors_row.append("#EAF4FB")
             else:
-                row.append("N/A");
-                colors_row.append("#F0F0F0")
+                row.append("N/A"); colors_row.append("#F0F0F0")
         except Exception:
-            row.append("N/A");
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
         table_data.append(row)
         cell_colors.append(colors_row)
@@ -1427,22 +1418,15 @@ def export_session(stock_list, stock_colors, etf_list, etf_colors,
                 if len(clean_prices) >= 2:
                     total = round((clean_prices[-1] / clean_prices[0] - 1) * 100, 1)
                 try:
-                    current_yr = d["years"][-1]
-                    prior_yr = current_yr - 1
-                    annual_dist = sum(
-                        dist for yr, dist in zip(d["years"], d["distributions"])
-                        if yr == prior_yr and dist is not None
-                    )
-                    if annual_dist == 0:
-                        annual_dist = sum(
-                            dist for yr, dist in zip(d["years"], d["distributions"])
-                            if yr == current_yr and dist is not None
-                        )
+                    latest_dist = next(
+                        (d["distributions"][i] for i in range(len(d["years"]) - 1, -1, -1)
+                         if d["distributions"][i] and d["distributions"][i] > 0), None)
                     cur = d.get("current_price")
-                    if annual_dist and cur and cur > 0:
-                        yield_pct = round(annual_dist / cur * 100, 2)
+                    if latest_dist and cur and cur > 0:
+                        yield_pct = round(latest_dist / cur * 100, 2)
                 except Exception:
                     pass
+
                 row = {
                     "symbol":        d["symbol"],
                     "name":          d["name"],
@@ -1512,23 +1496,31 @@ def main():
     print_db_summary(conn)
     print()
 
-    selected, YEARS_BACK, force_refresh, do_export = pick_tickers(DB_PATH)
+    selected, YEARS_BACK, force_refresh, do_export, \
+        _root, _log, _title_var, _run_again_btn, _status_bottom = pick_tickers(DB_PATH)
+
     if not selected:
         print("No tickers selected. Exiting.")
         sys.exit(0)
 
+    def log(msg, title=None):
+        """Write to both console and the status window."""
+        print(msg)
+        post_status(_log, _title_var, msg, title=title)
+
     stock_list, stock_colors = [], []
     etf_list,   etf_colors   = [], []
+
+    log(f"Processing {len(selected)} ticker(s)…", title="Downloading data…")
 
     for i, sym in enumerate(selected):
         try:
             col = get_color(i)
-            print(f"  Processing {sym}...")
 
             # ── ETF cached ────────────────────────────────────────────────
             cached_etf = load_etf_from_db(conn, sym)
             if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
-                print(f"  {sym}: loaded from DB as ETF")
+                log(f"  ✔ {sym}  loaded from DB (ETF)")
                 etf_list.append(trim_to_years(cached_etf, YEARS_BACK))
                 etf_colors.append(col)
                 continue
@@ -1536,12 +1528,13 @@ def main():
             # ── Stock cached ──────────────────────────────────────────────
             cached = load_ticker_from_db(conn, sym)
             if cached and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
-                print(f"  {sym}: loaded from DB (use --refresh to update)")
+                log(f"  ✔ {sym}  loaded from DB")
                 stock_list.append(trim_to_years(cached, YEARS_BACK))
                 stock_colors.append(col)
                 continue
 
             # ── Download ──────────────────────────────────────────────────
+            log(f"  ↓ {sym}  downloading…")
             t          = yf.Ticker(sym)
             quote_type = t.info.get("quoteType", "EQUITY")
 
@@ -1552,6 +1545,9 @@ def main():
                     merged = load_etf_from_db(conn, sym)
                     etf_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
                     etf_colors.append(col)
+                    log(f"  ✔ {sym}  saved (ETF)")
+                else:
+                    log(f"  ✖ {sym}  download failed")
             else:
                 d = download_ticker(sym, YEARS_BACK)
                 if d:
@@ -1559,30 +1555,30 @@ def main():
                     merged = load_ticker_from_db(conn, sym)
                     stock_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
                     stock_colors.append(col)
+                    log(f"  ✔ {sym}  saved")
                 else:
-                    print(f"  !! {sym} returned None — download failed")
+                    log(f"  ✖ {sym}  download failed")
 
         except Exception as e:
             import traceback
-            print(f"  !! EXCEPTION processing {sym}: {e}")
+            log(f"  ✖ {sym}  error: {e}")
             traceback.print_exc()
 
     # ── Debug exports ─────────────────────────────────────────────────────
-    print("\nExporting debug files:")
+    log("\nExporting debug files…", title="Saving files…")
     export_summary_txt(conn)
     export_full_csv(conn)
     export_db_health(conn)
+    log("  ✔ db_summary.txt  db_full.csv  db_health.txt")
 
     conn.close()
 
     if not stock_list and not etf_list:
-        print("\nNo data to display.")
+        log("\nNo data to display.")
         sys.exit(1)
 
     all_loaded = [d['symbol'] for d in stock_list] + [d['symbol'] for d in etf_list]
-    print(f"\nSuccessfully loaded: {all_loaded}")
-    print(f"Database: {DB_PATH}")
-    print("Generating charts...\n")
+    log(f"\nLoaded: {', '.join(all_loaded)}", title="Building charts…")
 
     apply_style()
     figs_stock_single = []
@@ -1593,25 +1589,29 @@ def main():
     fig_etf_table     = None
 
     for d, col in zip(stock_list, stock_colors):
+        log(f"  Chart: {d['symbol']}")
         fig = plot_single_ticker(d, col)
         fig.canvas.manager.set_window_title(f"{d['symbol']} — {d['name']}")
         figs_stock_single.append(fig)
 
     if stock_list:
+        log("  Table: Stock Scorecard")
         show_stock_table(stock_list, stock_colors, YEARS_BACK)
-        fig_stock_table = None
 
     if len(stock_list) > 1:
+        log("  Chart: Comparison")
         fig_comparison = plot_comparison(stock_list, stock_colors)
         fig_comparison.canvas.manager.set_window_title("Comparison — All Tickers")
+        log("  Chart: Snapshot")
         fig_snapshot = plot_snapshot(stock_list, stock_colors)
         fig_snapshot.canvas.manager.set_window_title("Snapshot — Latest Year")
 
     if etf_list:
+        log("  Chart: ETF Overview")
         fig_etf = plot_etf(etf_list, etf_colors, YEARS_BACK)
         fig_etf.canvas.manager.set_window_title("ETF Overview")
+        log("  Table: ETF Scorecard")
         show_etf_table(etf_list, etf_colors, YEARS_BACK)
-        fig_etf_table = None
 
     figs = figs_stock_single[:]
     for f in [fig_stock_table, fig_comparison, fig_snapshot, fig_etf, fig_etf_table]:
@@ -1619,21 +1619,25 @@ def main():
             figs.append(f)
 
     if not figs:
-        print("\nNo data to display.")
+        log("\nNo charts to display.")
         sys.exit(1)
 
     if do_export:
+        log("\nExporting session files…", title="Exporting…")
         saved, session_folder = export_session(
             stock_list, stock_colors, etf_list, etf_colors,
             figs_stock_single, fig_comparison, fig_snapshot,
             fig_etf, fig_etf_table, fig_stock_table, YEARS_BACK,
         )
-        print(f"\nExported {len(saved)} files to:")
-        print(f"  {session_folder}")
-        for f in saved:
-            print(f"    {f}")
+        log(f"  ✔ {len(saved)} files → {session_folder}")
+
+    log("\n✔ All done — close charts when finished.", title="Charts ready")
+    _run_again_btn.pack(side="left")
 
     plt.show()
+
+    # Charts closed — show Run Again button (already packed above)
+    _title_var.set("Done — run again?")
 
 def is_stale(conn, symbol, years_back, days=90):
     row = conn.execute(
@@ -1664,5 +1668,4 @@ if __name__ == "__main__":
         print("  UNHANDLED ERROR")
         print("="*60)
         traceback.print_exc()
-    finally:
         input("\nPress Enter to close...")
