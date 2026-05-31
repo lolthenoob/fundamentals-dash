@@ -1,0 +1,90 @@
+[2026-05-31, Sun, 02:15 PM NZDT]
+
+Let's go step by step.
+
+---
+
+## Step 1 — Open Anaconda Prompt
+
+Search **"Anaconda Prompt"** in the Windows start menu and open it. You should see something like:
+
+```
+(base) C:\Users\Jon>
+```
+
+---
+
+## Step 2 — Activate your stocks environment
+
+```
+conda activate stocks
+```
+
+Prompt should change to:
+
+```
+(stocks) C:\Users\Jon>
+```
+
+---
+
+## Step 3 — Navigate to your project folder
+
+```
+cd C:\A.Jon\python\260530_stock_dashboard
+```
+
+---
+
+## Step 4 — Fix `main.py` before building
+
+Before we build, we need to patch the DB path issue. Open `main.py` in PyCharm and find these two lines near the top:
+
+```python
+DB_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tickers")
+DB_OUTPUT  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+```
+
+Replace them with:
+
+```python
+_BASE = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+DB_DIR    = os.path.join(_BASE, "tickers")
+DB_OUTPUT = os.path.join(_BASE, "output")
+```
+
+Save the file.
+
+---
+
+## Step 5 — Delete old build artifacts
+
+```
+rmdir /s /q build dist
+del IT-Dashboard.spec
+```
+
+---
+
+## Step 6 — Run the build (with console visible this time)
+
+```
+python -m PyInstaller --onefile --name "Fundamentals-Dashboard" --hidden-import "matplotlib.backends.backend_tkagg" --hidden-import "mplcursors" --hidden-import "dateutil.parser" --hidden-import "yfinance" --hidden-import "numpy" --hidden-import "ticker_picker" --collect-all yfinance --collect-all mplcursors main.py
+```
+
+Wait for it to finish — it'll take a minute or two.
+
+---
+
+## Step 7 — Test it from the command prompt
+
+```
+cd dist
+IT-Dashboard.exe
+```
+
+Running it this way keeps the console open so you can see any errors.
+
+---
+
+Tell me what you see after Step 7 and we'll go from there.

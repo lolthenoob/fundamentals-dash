@@ -22,7 +22,7 @@ CLR_BTN_FG  = "#FFFFFF"
 TICK_FONT_SIZE = 16
 ROW_PADY       = 0
 ROW_PADX       = 8
-WINDOW_WIDTH   = 660
+WINDOW_WIDTH   = 950
 WINDOW_HEIGHT  = 0.88
 WINDOW_X       = None
 WINDOW_Y       = 20
@@ -48,6 +48,8 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
 
     result_tickers: list[str] = []
     result_years:   int       = YEARS_DEFAULT
+    result_refresh: bool = False
+    result_export: bool = False
 
     root = tk.Tk()
     root.title("📈  Select Tickers")
@@ -245,7 +247,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
 
     search_var.trace_add("write", _apply_filter)
 
-    # ── Bottom bar ────────────────────────────────────────────────────────
+# ── Bottom bar ────────────────────────────────────────────────────────
     ctrl = tk.Frame(root, bg=CLR_BG, pady=10, padx=14)
     ctrl.pack(fill="x")
 
@@ -270,6 +272,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
             v.set(False)
         _sync_all_buttons()
 
+    # ── Left side ─────────────────────────────────────────────────────────
     tk.Button(ctrl, text="✔  Select All", bg="#10B981", fg=CLR_BTN_FG,
               activebackground="#0D9E6E",
               command=_select_all, **btn_cfg).pack(side="left", padx=(0, 8))
@@ -281,7 +284,6 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
     tk.Label(ctrl, textvariable=count_var, bg=CLR_BG,
              fg=CLR_SUBTEXT, font=mono).pack(side="left", padx=14)
 
-    # ── Years selector ────────────────────────────────────────────────────
     years_frame = tk.Frame(ctrl, bg=CLR_BG)
     years_frame.pack(side="left", padx=(0, 14))
     tk.Label(years_frame, text="History:", bg=CLR_BG,
@@ -295,23 +297,50 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
     tk.Label(years_frame, text="yrs", bg=CLR_BG,
              fg=CLR_SUBTEXT, font=mono).pack(side="left", padx=(4, 0))
 
-    # ── Go button ─────────────────────────────────────────────────────────
+    # ── Right side — pack right-to-left so Go anchors the edge ───────────
+    refresh_var = tk.BooleanVar(value=False)
+    export_var = tk.BooleanVar(value=False)
+
     def _go():
-        nonlocal result_tickers, result_years
+        nonlocal result_tickers, result_years, result_refresh, result_export
         result_tickers = [sym for sym, v in check_vars.items() if v.get()]
         try:
             result_years = max(1, int(years_var.get()))
         except ValueError:
             result_years = YEARS_DEFAULT
+        result_refresh = refresh_var.get()
+        result_export = export_var.get()
         root.destroy()
+
+    def _make_toggle_btn(frame, label, var, side="right", padx=(0, 8)):
+        container = tk.Frame(frame, bg=CLR_BG)
+        container.pack(side=side, padx=padx)
+        btn = tk.Button(container, text="☐", font=tick_font,
+                        fg="#AAAAAA", bg=CLR_BG, activebackground=CLR_BG,
+                        relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+        btn.pack(side="left")
+        tk.Label(container, text=label, bg=CLR_BG,
+                 fg=CLR_SUBTEXT, font=bold).pack(side="left")
+
+        def _toggle():
+            var.set(not var.get())
+            btn.config(text="☑" if var.get() else "☐",
+                       fg=CLR_ACCENT if var.get() else "#AAAAAA")
+
+        btn.config(command=_toggle)
 
     tk.Button(ctrl, text="▶  Go", bg=CLR_ACCENT, fg=CLR_BTN_FG,
               activebackground="#0082C8",
               command=_go, **btn_cfg).pack(side="right")
+    _make_toggle_btn(ctrl, "Re-download", refresh_var, side="right", padx=(0, 8))
+    _make_toggle_btn(ctrl, "Export files", export_var, side="right", padx=(0, 8))
 
     root.bind("<Return>", lambda e: _go())
     root.mainloop()
-    return result_tickers, result_years
+    return result_tickers, result_years, result_refresh, result_export
+    root.bind("<Return>", lambda e: _go())
+    root.mainloop()
+    return result_tickers, result_years, result_refresh, result_export
 
 
 def _manual_entry_fallback() -> tuple[list[str], int]:
@@ -366,4 +395,4 @@ def _manual_entry_fallback() -> tuple[list[str], int]:
               command=_go).pack(pady=10)
     root.bind("<Return>", lambda e: _go())
     root.mainloop()
-    return result_tickers, result_years
+    return result_tickers, result_years, False, False
