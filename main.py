@@ -356,6 +356,105 @@ def export_full_csv(conn):
     print(f"  → db_full.csv     ({len(rows)} rows)")
 
 
+def export_db_health(conn):
+    """
+    Write output/db_health.txt — flags missing or suspicious data per ticker.
+    Checks: missing fields in tickers table, years with all-None annual data,
+    suspiciously few years of history, stale last_updated.
+    """
+    path = os.path.join(DB_OUTPUT, "db_health.txt")
+    now  = datetime.now()
+
+    tickers = conn.execute("SELECT * FROM tickers ORDER BY symbol").fetchall()
+    issues  = []   # list of (symbol, issue_string)
+    ok      = []
+
+    TICKER_FIELDS = ["name", "current_price", "analyst_tp", "analyst_low",
+                     "analyst_high", "consensus", "trailing_pe", "forward_pe"]
+
+    for t in tickers:
+        sym      = t["symbol"]
+        is_etf   = (t["consensus"] == "ETF")
+        sym_issues = []
+
+        # ── Tickers table: missing fields ────────────────────────────────
+        for field in TICKER_FIELDS:
+            if t[field] is None:
+                # forward/trailing PE only expected for stocks
+                if field in ("trailing_pe", "forward_pe") and is_etf:
+                    continue
+                # analyst fields not always available — flag but softer
+                if field in ("analyst_tp", "analyst_low", "analyst_high", "consensus"):
+                    sym_issues.append(f"  WARN  {field} is NULL")
+                else:
+                    sym_issues.append(f"  MISS  {field} is NULL")
+
+        # ── Stale data ────────────────────────────────────────────────────
+        if t["last_updated"]:
+            try:
+                updated = dateutil.parser.parse(t["last_updated"]).replace(tzinfo=None)
+                age_days = (now - updated).days
+                if age_days > 180:
+                    sym_issues.append(f"  STALE last_updated {age_days}d ago ({t['last_updated'][:10]})")
+            except Exception:
+                sym_issues.append(f"  WARN  could not parse last_updated: {t['last_updated']}")
+        else:
+            sym_issues.append(f"  MISS  last_updated is NULL")
+
+        # ── Annual / ETF data rows ────────────────────────────────────────
+        if is_etf:
+            rows = conn.execute(
+                "SELECT * FROM etf_data WHERE symbol=? ORDER BY fiscal_year", (sym,)
+            ).fetchall()
+            annual_fields = ["price", "distribution", "annual_return"]
+        else:
+            rows = conn.execute(
+                "SELECT * FROM annual_data WHERE symbol=? ORDER BY fiscal_year", (sym,)
+            ).fetchall()
+            annual_fields = ["price", "eps", "pe", "roe", "bvps",
+                             "debt_assets", "ocfps", "fcfps", "revps"]
+
+        if not rows:
+            sym_issues.append(f"  MISS  no annual data rows at all")
+        else:
+            if len(rows) < 5:
+                sym_issues.append(f"  WARN  only {len(rows)} year(s) of history")
+            for row in rows:
+                yr      = row["fiscal_year"]
+                missing = [f for f in annual_fields if row[f] is None]
+                if len(missing) == len(annual_fields):
+                    sym_issues.append(f"  MISS  {yr}: all fields NULL")
+                elif missing:
+                    sym_issues.append(f"  WARN  {yr}: NULL in {', '.join(missing)}")
+
+        if sym_issues:
+            issues.append((sym, sym_issues))
+        else:
+            ok.append(sym)
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"DB Health Report  —  {now.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("=" * 62 + "\n\n")
+
+        if not issues:
+            f.write("  ✓ All tickers look healthy.\n\n")
+        else:
+            f.write(f"  {len(issues)} ticker(s) with issues:\n\n")
+            for sym, sym_issues in issues:
+                f.write(f"  [{sym}]\n")
+                for line in sym_issues:
+                    f.write(f"    {line}\n")
+                f.write("\n")
+
+        f.write("-" * 62 + "\n")
+        f.write(f"  Clean tickers ({len(ok)}): {', '.join(ok) if ok else 'none'}\n")
+
+    issue_count = sum(len(v) for _, v in issues)
+    print(f"  → db_health.txt   ({len(issues)} tickers with issues, {issue_count} total flags)")
+
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. DATA DOWNLOAD
 # ─────────────────────────────────────────────────────────────────────────────
@@ -951,7 +1050,7 @@ def plot_stock_table(data_list, colors, years_back):
 
     fig_height = max(4.5, 2.0 + len(data_list) * 0.9)
     fig, ax = plt.subplots(figsize=(14, fig_height), facecolor="white")
-    fig.suptitle("Stock Scorecard", fontsize=16, fontweight="bold", y=0.95)
+    fig.suptitle("Stock Scorecard", fontsize=13, fontweight="bold", y=0.95)
     ax.axis("off")
 
     table = ax.table(
@@ -1487,8 +1586,6 @@ def main():
         try:
             col = get_color(i)
             print(f"  Processing {sym}...")
-            col = get_color(i)
-            print(f"  Processing {sym}...")  # ADD THIS
             # Check if already known as ETF in DB
             cached_etf = load_etf_from_db(conn, sym)
             if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
@@ -1535,6 +1632,7 @@ def main():
     print("\nExporting debug files:")
     export_summary_txt(conn)
     export_full_csv(conn)
+    export_db_health(conn)
 
     conn.close()
 
@@ -1625,4 +1723,13 @@ def is_stale(conn, symbol, years_back, days=90):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print("\n" + "="*60)
+        print("  UNHANDLED ERROR")
+        print("="*60)
+        traceback.print_exc()
+    finally:
+        input("\nPress Enter to close...")
