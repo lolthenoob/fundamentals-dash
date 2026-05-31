@@ -822,6 +822,7 @@ def plot_stock_table(data_list, colors, years_back):
         return avg_last_n(pe_list, 5)
 
     col_labels = [
+        "Name",
         "Price\n(current)",
         f"EPS CAGR\n({years_back - 1}yr)",
         "Fwd/Avg\nP/E ratio",
@@ -841,6 +842,10 @@ def plot_stock_table(data_list, colors, years_back):
     for d in data_list:
         row = []
         crow = []
+
+        # Name
+        row.append(d.get("name", ""))
+        crow.append("#EAF4FB")
 
         # Current price
         cur_price = d.get("current_price")
@@ -1153,7 +1158,8 @@ def plot_etf_table(etf_list, colors, years_back):
     periods = sorted(set([1, 3, 5, 10, years_back - 1]))
 
     col_labels = (
-        [f"CAGR {p}yr" for p in periods]
+            ["Name"]
+            + [f"CAGR {p}yr" for p in periods]
         + ["Best Year", "Worst Year", "Avg Return", "Volatility", "Total Return", "Yield %"]
     )
     row_labels = [d["symbol"] for d in etf_list]
@@ -1164,6 +1170,9 @@ def plot_etf_table(etf_list, colors, years_back):
     for d in etf_list:
         row = []
         colors_row = []
+        # Name
+        row.append(d.get("name", ""))
+        colors_row.append("#EAF4FB")
 
         # CAGR columns
         for p in periods:
@@ -1498,14 +1507,17 @@ def main():
             d = download_etf(sym, YEARS_BACK)
             if d:
                 upsert_etf(conn, d)
-                etf_list.append(d)
+                merged = load_etf_from_db(conn, sym)
+                etf_list.append(merged if merged else d)
                 etf_colors.append(col)
-        else:
-            d = download_ticker(sym, YEARS_BACK)
-            if d:
-                upsert_ticker(conn, d)
-                stock_list.append(d)
-                stock_colors.append(col)
+                
+            else:
+                d = download_ticker(sym, YEARS_BACK)
+                if d:
+                    upsert_ticker(conn, d)
+                    merged = load_ticker_from_db(conn, sym)
+                    stock_list.append(merged if merged else d)
+                    stock_colors.append(col)
 
     # ── Debug exports (always written, reflect full DB state) ─────────────
     print("\nExporting debug files:")
