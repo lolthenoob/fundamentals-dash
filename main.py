@@ -15,6 +15,7 @@ CONFIGURE YOUR TICKERS HERE:
 
 # ─────────────────────────────────────────────────────────────────────────────
 from ticker_picker import pick_tickers
+from interactive_table import show_stock_table, show_etf_table
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -950,7 +951,7 @@ def plot_stock_table(data_list, colors, years_back):
 
     fig_height = max(4.5, 2.0 + len(data_list) * 0.9)
     fig, ax = plt.subplots(figsize=(14, fig_height), facecolor="white")
-    fig.suptitle("Stock Scorecard", fontsize=13, fontweight="bold", y=0.95)
+    fig.suptitle("Stock Scorecard", fontsize=16, fontweight="bold", y=0.95)
     ax.axis("off")
 
     table = ax.table(
@@ -1562,8 +1563,8 @@ def main():
         figs_stock_single.append(fig)
 
     if stock_list:
-        fig_stock_table = plot_stock_table(stock_list, stock_colors, YEARS_BACK)
-        fig_stock_table.canvas.manager.set_window_title("Stock Scorecard")
+        show_stock_table(stock_list, stock_colors, YEARS_BACK)
+        fig_stock_table = None   # no longer a matplotlib figure
 
     if len(stock_list) > 1:
         fig_comparison = plot_comparison(stock_list, stock_colors)
@@ -1574,8 +1575,8 @@ def main():
     if etf_list:
         fig_etf = plot_etf(etf_list, etf_colors, YEARS_BACK)
         fig_etf.canvas.manager.set_window_title("ETF Overview")
-        fig_etf_table = plot_etf_table(etf_list, etf_colors, YEARS_BACK)
-        fig_etf_table.canvas.manager.set_window_title("ETF Performance Summary")
+        show_etf_table(etf_list, etf_colors, YEARS_BACK)
+        fig_etf_table = None   # no longer a matplotlib figure
 
     # Collect all figs for plt.show()
     figs = figs_stock_single[:]

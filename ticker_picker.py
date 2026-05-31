@@ -232,14 +232,15 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
         q = search_var.get().strip().upper()
         any_visible = False
         for sym, name in available:
-            if not q or q == sym.upper() or q in name.upper():
+            if not q or sym.upper().startswith(q) or q in sym.upper() or q in name.upper():
                 row_frames[sym].pack(fill="x")
                 any_visible = True
             else:
                 row_frames[sym].pack_forget()
         canvas.yview_moveto(0)
 
-        if q and not any_visible and 1 <= len(q) <= 6:
+        exact_match = q in {sym.upper() for sym, _ in available}
+        if q and not exact_match:
             add_new_btn.config(text=f"＋  Add \"{q}\" as new ticker")
             add_new_btn.pack(fill="x", pady=4)
         else:
