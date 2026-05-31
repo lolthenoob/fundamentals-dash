@@ -104,7 +104,7 @@ python main.py --refresh
 
 ```bash
 pip install pyinstaller
-python -m PyInstaller --onefile --windowed --name "IT-Dashboard" \
+python -m PyInstaller --onefile --windowed --name "Fundamentals-Dashboard" \
   --hidden-import "matplotlib.backends.backend_tkagg" \
   --hidden-import "mplcursors" \
   --hidden-import "dateutil.parser" \
@@ -115,7 +115,7 @@ python -m PyInstaller --onefile --windowed --name "IT-Dashboard" \
   main.py
 ```
 
-Output: `dist/IT-Dashboard.exe` (Windows) or `dist/IT-Dashboard` (Mac/Linux).
+Output: `dist/Fundamentals-Dashboard.exe` (Windows) or `dist/Fundamentals-Dashboard` (Mac/Linux).
 
 ---
 
