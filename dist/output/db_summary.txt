@@ -1,8 +1,0 @@
-fundamentals.db  —  exported 2026-05-31 14:40:14
-==============================================================
-
-  Symbol   Last Updated           Name
-  -------- ---------------------- ------------------------------
-  MSFT     2026-05-31T14:40:14    Microsoft Corporation
-
-  1 tickers  ·  4 annual rows

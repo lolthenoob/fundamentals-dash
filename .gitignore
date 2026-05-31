@@ -1,0 +1,20 @@
+ 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# IDE
+.idea/
+
+# Database & outputs
+tickers/
+output/
+
+# venv
+.venv/
