@@ -1482,35 +1482,39 @@ def main():
     etf_list, etf_colors = [], []
 
     for i, sym in enumerate(selected):
-        col = get_color(i)
 
-        # Check if already known as ETF in DB
-        cached_etf = load_etf_from_db(conn, sym)
-        if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
-            print(f"  {sym}: loaded from DB as ETF")
-            etf_list.append(cached_etf)
-            etf_colors.append(col)
-            continue
-
-        cached = load_ticker_from_db(conn, sym)
-        if cached and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
-            print(f"  {sym}: loaded from DB (use --refresh to update)")
-            stock_list.append(cached)
-            stock_colors.append(col)
-            continue
-
-        # Need to download — detect type first
-        t = yf.Ticker(sym)
-        quote_type = t.info.get("quoteType", "EQUITY")
-
-        if quote_type == "ETF":
-            d = download_etf(sym, YEARS_BACK)
-            if d:
-                upsert_etf(conn, d)
-                merged = load_etf_from_db(conn, sym)
-                etf_list.append(merged if merged else d)
+        try:
+            col = get_color(i)
+            print(f"  Processing {sym}...")
+            col = get_color(i)
+            print(f"  Processing {sym}...")  # ADD THIS
+            # Check if already known as ETF in DB
+            cached_etf = load_etf_from_db(conn, sym)
+            if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
+                print(f"  {sym}: loaded from DB as ETF")
+                etf_list.append(cached_etf)
                 etf_colors.append(col)
-                
+                continue
+
+            cached = load_ticker_from_db(conn, sym)
+            if cached and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
+                print(f"  {sym}: loaded from DB (use --refresh to update)")
+                stock_list.append(cached)
+                stock_colors.append(col)
+                continue
+
+            # Need to download — detect type first
+            t = yf.Ticker(sym)
+            quote_type = t.info.get("quoteType", "EQUITY")
+
+            if quote_type == "ETF":
+                d = download_etf(sym, YEARS_BACK)
+                if d:
+                    upsert_etf(conn, d)
+                    merged = load_etf_from_db(conn, sym)
+                    etf_list.append(merged if merged else d)
+                    etf_colors.append(col)
+
             else:
                 d = download_ticker(sym, YEARS_BACK)
                 if d:
@@ -1518,6 +1522,13 @@ def main():
                     merged = load_ticker_from_db(conn, sym)
                     stock_list.append(merged if merged else d)
                     stock_colors.append(col)
+                else:
+                    print(f"  !! {sym} returned None — download failed")
+        except Exception as e:
+            import traceback
+            print(f"  !! EXCEPTION processing {sym}: {e}")
+            traceback.print_exc()
+
 
     # ── Debug exports (always written, reflect full DB state) ─────────────
     print("\nExporting debug files:")
