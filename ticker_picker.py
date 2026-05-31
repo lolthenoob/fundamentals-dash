@@ -29,14 +29,21 @@ CLR_TEXT    = "#1A1A2E"
 CLR_SUBTEXT = "#555577"
 CLR_BTN_FG  = "#FFFFFF"
 
-TICK_FONT_SIZE = 16
+TICK_FONT_SIZE = 20
 ROW_PADY       = 0
 ROW_PADX       = 8
-WINDOW_WIDTH   = 950
-WINDOW_HEIGHT  = 0.88
-WINDOW_X       = None
-WINDOW_Y       = 20
+WINDOW_WIDTH   = 1400
+WINDOW_HEIGHT  = 1.25
+WINDOW_X       = 50
+WINDOW_Y       = 50
 YEARS_DEFAULT  = 11
+
+MONO_FONT_SIZE = 18
+BOLD_FONT_SIZE = 18
+HDR_BOLD_FONT_SIZE = 20
+HDR_SUB_FONT_SIZE = 20
+SEL_FONT_SIZE = 18
+
 
 # Maximum symbol length — anything longer is likely a paste artefact
 _SYM_MAX_LEN = 6
@@ -106,11 +113,11 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
     root.geometry(f"{w}x{h}+{x}+{WINDOW_Y}")
     root.minsize(500, 400)
 
-    mono      = tkfont.Font(family="Consolas", size=11)
-    bold      = tkfont.Font(family="Consolas", size=11, weight="bold")
-    hdr_bold  = tkfont.Font(family="Consolas", size=13, weight="bold")
-    hdr_sub   = tkfont.Font(family="Consolas", size=10)
-    sel_font  = tkfont.Font(family="Consolas", size=11, weight="bold")
+    mono      = tkfont.Font(family="Consolas", size=MONO_FONT_SIZE)
+    bold      = tkfont.Font(family="Consolas", size=BOLD_FONT_SIZE, weight="bold")
+    hdr_bold  = tkfont.Font(family="Consolas", size=HDR_BOLD_FONT_SIZE, weight="bold")
+    hdr_sub   = tkfont.Font(family="Consolas", size=HDR_SUB_FONT_SIZE)
+    sel_font  = tkfont.Font(family="Consolas", size=SEL_FONT_SIZE, weight="bold")
     tick_font = tkfont.Font(family="Segoe UI Symbol", size=TICK_FONT_SIZE)
 
     # ── Header ────────────────────────────────────────────────────────────
