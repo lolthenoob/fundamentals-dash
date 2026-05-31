@@ -119,28 +119,43 @@ def _create_tables(conn):
         except sqlite3.OperationalError:
             pass  # column already exists
 
-def upsert_ticker(conn, d):
+    # Migrate existing DBs to add years_stored / history_exhausted
+    for col_def in ("years_stored INTEGER", "history_exhausted INTEGER DEFAULT 0"):
+        col_name = col_def.split()[0]
+        try:
+            conn.execute(f"ALTER TABLE tickers ADD COLUMN {col_def}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+def upsert_ticker(conn, d, years_requested):
     now = datetime.now().isoformat(timespec="seconds")
+    years_stored      = len(d["years"])
+    history_exhausted = 1 if years_stored < years_requested else 0
 
     conn.execute("""
         INSERT INTO tickers
             (symbol, name, current_price, analyst_tp, analyst_low, analyst_high,
-             consensus, trailing_pe, forward_pe, last_updated)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+             consensus, trailing_pe, forward_pe, last_updated,
+             years_stored, history_exhausted)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(symbol) DO UPDATE SET
-            name          = excluded.name,
-            current_price = excluded.current_price,
-            analyst_tp    = excluded.analyst_tp,
-            analyst_low   = excluded.analyst_low,
-            analyst_high  = excluded.analyst_high,
-            consensus     = excluded.consensus,
-            trailing_pe   = excluded.trailing_pe,
-            forward_pe    = excluded.forward_pe,
-            last_updated  = excluded.last_updated
+            name              = excluded.name,
+            current_price     = excluded.current_price,
+            analyst_tp        = excluded.analyst_tp,
+            analyst_low       = excluded.analyst_low,
+            analyst_high      = excluded.analyst_high,
+            consensus         = excluded.consensus,
+            trailing_pe       = excluded.trailing_pe,
+            forward_pe        = excluded.forward_pe,
+            last_updated      = excluded.last_updated,
+            years_stored      = excluded.years_stored,
+            history_exhausted = excluded.history_exhausted
     """, (
         d["symbol"], d["name"], d["current_price"],
         d["analyst_tp"], d["analyst_low"], d["analyst_high"],
         d["consensus"], d["trailing_pe"], d["forward_pe"], now,
+        years_stored, history_exhausted,
     ))
 
     rows = zip(
@@ -210,18 +225,25 @@ def load_ticker_from_db(conn, symbol):
         "forward_pe":    row["forward_pe"]
     }
 
-def upsert_etf(conn, d):
+def upsert_etf(conn, d, years_requested):
     now = datetime.now().isoformat(timespec="seconds")
+    years_stored      = len(d["years"])
+    history_exhausted = 1 if years_stored < years_requested else 0
+
     conn.execute("""
         INSERT INTO tickers (symbol, name, current_price, analyst_tp,
-            analyst_low, analyst_high, consensus, last_updated)
-        VALUES (?,?,?,NULL,NULL,NULL,?,?)
+            analyst_low, analyst_high, consensus, last_updated,
+            years_stored, history_exhausted)
+        VALUES (?,?,?,NULL,NULL,NULL,?,?,?,?)
         ON CONFLICT(symbol) DO UPDATE SET
-            name          = excluded.name,
-            current_price = excluded.current_price,
-            consensus     = excluded.consensus,
-            last_updated  = excluded.last_updated
-    """, (d["symbol"], d["name"], d["current_price"], "ETF", now))
+            name              = excluded.name,
+            current_price     = excluded.current_price,
+            consensus         = excluded.consensus,
+            last_updated      = excluded.last_updated,
+            years_stored      = excluded.years_stored,
+            history_exhausted = excluded.history_exhausted
+    """, (d["symbol"], d["name"], d["current_price"], "ETF", now,
+          years_stored, history_exhausted))
 
     conn.executemany("""
         INSERT INTO etf_data (symbol, fiscal_year, price, distribution, annual_return)
@@ -1543,7 +1565,7 @@ def main():
                 if quote_type == "ETF":
                     d = download_etf(sym, YEARS_BACK)
                     if d:
-                        upsert_etf(conn, d)
+                        upsert_etf(conn, d, YEARS_BACK)
                         merged = load_etf_from_db(conn, sym)
                         etf_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
                         etf_colors.append(col)
@@ -1553,7 +1575,7 @@ def main():
                 else:
                     d = download_ticker(sym, YEARS_BACK)
                     if d:
-                        upsert_ticker(conn, d)
+                        upsert_ticker(conn, d, YEARS_BACK)
                         merged = load_ticker_from_db(conn, sym)
                         stock_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
                         stock_colors.append(col)
@@ -1655,7 +1677,8 @@ def main():
 
 def is_stale(conn, symbol, years_back, days=90):
     row = conn.execute(
-        "SELECT last_updated, consensus FROM tickers WHERE symbol = ?", (symbol,)
+        "SELECT last_updated, consensus, years_stored, history_exhausted FROM tickers WHERE symbol = ?",
+        (symbol,)
     ).fetchone()
     if not row:
         return True
@@ -1666,6 +1689,11 @@ def is_stale(conn, symbol, years_back, days=90):
         f"SELECT COUNT(*) FROM {table} WHERE symbol = ?", (symbol,)
     ).fetchone()[0]
     if count == 0:
+        return True
+
+    years_stored      = row["years_stored"] or 0
+    history_exhausted = bool(row["history_exhausted"])
+    if years_back > years_stored and not history_exhausted:
         return True
 
     parsed = dateutil.parser.parse(row["last_updated"])
