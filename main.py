@@ -1636,18 +1636,21 @@ def main():
 
     plt.show()
 
-    # Charts closed — show Run Again button (already packed above)
+    # Charts all closed — window stays open, subtitle updates
     _title_var.set("Done — run again?")
+    _root.mainloop()   # keeps the window alive until Run Again or close
 
 def is_stale(conn, symbol, years_back, days=90):
     row = conn.execute(
-        "SELECT last_updated FROM tickers WHERE symbol = ?", (symbol,)
+        "SELECT last_updated, consensus FROM tickers WHERE symbol = ?", (symbol,)
     ).fetchone()
     if not row:
         return True
 
-    count = conn.execute(
-        "SELECT COUNT(*) FROM annual_data WHERE symbol = ?", (symbol,)
+    is_etf = (row["consensus"] == "ETF")
+    table  = "etf_data" if is_etf else "annual_data"
+    count  = conn.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE symbol = ?", (symbol,)
     ).fetchone()[0]
     if count < years_back:
         return True

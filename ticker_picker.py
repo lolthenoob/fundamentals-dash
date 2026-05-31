@@ -791,11 +791,13 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
         font=("Consolas", 11),
         bg="white", fg=CLR_TEXT,
         relief="flat",
-        state="disabled",
         wrap="word",
         highlightthickness=1,
         highlightbackground="#CCCCCC",
+        cursor="arrow",
     )
+    # Allow selection/copy but block typing
+    log_text.bind("<Key>", lambda e: "break" if e.keysym not in ("c", "C") or not (e.state & 0x4) else None)
     log_scroll = ttk.Scrollbar(log_outer, command=log_text.yview)
     log_text.configure(yscrollcommand=log_scroll.set)
     log_scroll.pack(side="right", fill="y")
@@ -824,9 +826,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
         search_var.set("")
         refresh_var.set(False)
         export_var.set(False)
-        log_text.configure(state="normal")
         log_text.delete("1.0", "end")
-        log_text.configure(state="disabled")
         status_title_var.set("Loading…")
         hdr.pack(fill="x")
         summary_frame.pack(fill="x")
@@ -847,14 +847,12 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
 def post_status(log_text, status_title_var, message, title=None):
     """
     Append a line to the status window log and optionally update the subtitle.
-    Safe to call from the main thread (not threaded).
+    Safe to call from the main thread.
     """
     if title:
         status_title_var.set(title)
-    log_text.configure(state="normal")
     log_text.insert("end", message + "\n")
     log_text.see("end")
-    log_text.configure(state="disabled")
     log_text.update_idletasks()
 
 
