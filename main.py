@@ -1275,19 +1275,28 @@ def plot_etf_table(etf_list, colors, years_back):
             row.append("N/A"); colors_row.append("#F0F0F0")
 
         try:
-            latest_dist = next(
-                (d["distributions"][i] for i in range(len(d["years"]) - 1, -1, -1)
-                 if d["distributions"][i] is not None and d["distributions"][i] > 0),
-                None
+            current_yr = d["years"][-1]
+            prior_yr = current_yr - 1
+            annual_dist = sum(
+                dist for yr, dist in zip(d["years"], d["distributions"])
+                if yr == prior_yr and dist is not None
             )
+            if annual_dist == 0:
+                annual_dist = sum(
+                    dist for yr, dist in zip(d["years"], d["distributions"])
+                    if yr == current_yr and dist is not None
+                )
             cur_price = d.get("current_price")
-            if latest_dist and cur_price and cur_price > 0:
-                yield_pct = round(latest_dist / cur_price * 100, 2)
-                row.append(f"{yield_pct:.2f}%"); colors_row.append("#EAF4FB")
+            if annual_dist and cur_price and cur_price > 0:
+                yield_pct = round(annual_dist / cur_price * 100, 2)
+                row.append(f"{yield_pct:.2f}%");
+                colors_row.append("#EAF4FB")
             else:
-                row.append("N/A"); colors_row.append("#F0F0F0")
+                row.append("N/A");
+                colors_row.append("#F0F0F0")
         except Exception:
-            row.append("N/A"); colors_row.append("#F0F0F0")
+            row.append("N/A");
+            colors_row.append("#F0F0F0")
 
         table_data.append(row)
         cell_colors.append(colors_row)
@@ -1418,15 +1427,22 @@ def export_session(stock_list, stock_colors, etf_list, etf_colors,
                 if len(clean_prices) >= 2:
                     total = round((clean_prices[-1] / clean_prices[0] - 1) * 100, 1)
                 try:
-                    latest_dist = next(
-                        (d["distributions"][i] for i in range(len(d["years"]) - 1, -1, -1)
-                         if d["distributions"][i] and d["distributions"][i] > 0), None)
+                    current_yr = d["years"][-1]
+                    prior_yr = current_yr - 1
+                    annual_dist = sum(
+                        dist for yr, dist in zip(d["years"], d["distributions"])
+                        if yr == prior_yr and dist is not None
+                    )
+                    if annual_dist == 0:
+                        annual_dist = sum(
+                            dist for yr, dist in zip(d["years"], d["distributions"])
+                            if yr == current_yr and dist is not None
+                        )
                     cur = d.get("current_price")
-                    if latest_dist and cur and cur > 0:
-                        yield_pct = round(latest_dist / cur * 100, 2)
+                    if annual_dist and cur and cur > 0:
+                        yield_pct = round(annual_dist / cur * 100, 2)
                 except Exception:
                     pass
-
                 row = {
                     "symbol":        d["symbol"],
                     "name":          d["name"],
