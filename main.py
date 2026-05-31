@@ -120,10 +120,6 @@ def _create_tables(conn):
             pass  # column already exists
 
 def upsert_ticker(conn, d):
-    """
-    Insert or replace a ticker's data.
-    Called once per successfully downloaded ticker.
-    """
     now = datetime.now().isoformat(timespec="seconds")
 
     conn.execute("""
@@ -147,7 +143,6 @@ def upsert_ticker(conn, d):
         d["consensus"], d["trailing_pe"], d["forward_pe"], now,
     ))
 
-    # Upsert each fiscal year row
     rows = zip(
         d["years"],  d["prices"], d["eps"],   d["pe"],
         d["roe"],    d["bvps"],   d["debt_assets"],
@@ -176,10 +171,6 @@ def upsert_ticker(conn, d):
     print(f"    → Saved {d['symbol']} to DB ({len(d['years'])} years)")
 
 def load_ticker_from_db(conn, symbol):
-    """
-    Reload a previously saved ticker dict from the database.
-    Returns None if the symbol isn't stored yet.
-    """
     row = conn.execute(
         "SELECT * FROM tickers WHERE symbol = ?", (symbol,)
     ).fetchone()
@@ -275,7 +266,6 @@ def load_etf_from_db(conn, symbol):
     }
 
 def print_db_summary(conn):
-    """Print a quick summary of what's in the database."""
     tickers = conn.execute(
         "SELECT symbol, name, last_updated FROM tickers ORDER BY symbol"
     ).fetchall()
@@ -293,11 +283,6 @@ def print_db_summary(conn):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def export_summary_txt(conn):
-    """
-    Write tickers/db_summary.txt — the same Symbol / Last Updated / Name
-    table that prints to the console, plus a row count footer.
-    Overwrites on every run so it always reflects the current DB state.
-    """
     path = os.path.join(DB_OUTPUT, "db_summary.txt")
     tickers = conn.execute(
         "SELECT symbol, name, last_updated FROM tickers ORDER BY symbol"
@@ -317,15 +302,6 @@ def export_summary_txt(conn):
 
 
 def export_full_csv(conn):
-    """
-    Write tickers/db_full.csv — every annual_data row joined to its
-    ticker metadata, one flat row per symbol × fiscal_year.
-    Columns: symbol, name, fiscal_year, current_price, analyst_tp,
-             analyst_low, analyst_high, consensus, last_updated,
-             price, eps, pe, roe, bvps, debt_assets,
-             ocfps, fcfps, revps, divps
-    Overwrites on every run.
-    """
     path = os.path.join(DB_OUTPUT, "db_full.csv")
     rows = conn.execute("""
         SELECT
@@ -357,16 +333,11 @@ def export_full_csv(conn):
 
 
 def export_db_health(conn):
-    """
-    Write output/db_health.txt — flags missing or suspicious data per ticker.
-    Checks: missing fields in tickers table, years with all-None annual data,
-    suspiciously few years of history, stale last_updated.
-    """
     path = os.path.join(DB_OUTPUT, "db_health.txt")
     now  = datetime.now()
 
     tickers = conn.execute("SELECT * FROM tickers ORDER BY symbol").fetchall()
-    issues  = []   # list of (symbol, issue_string)
+    issues  = []
     ok      = []
 
     TICKER_FIELDS = ["name", "current_price", "analyst_tp", "analyst_low",
@@ -377,19 +348,15 @@ def export_db_health(conn):
         is_etf   = (t["consensus"] == "ETF")
         sym_issues = []
 
-        # ── Tickers table: missing fields ────────────────────────────────
         for field in TICKER_FIELDS:
             if t[field] is None:
-                # forward/trailing PE only expected for stocks
                 if field in ("trailing_pe", "forward_pe") and is_etf:
                     continue
-                # analyst fields not always available — flag but softer
                 if field in ("analyst_tp", "analyst_low", "analyst_high", "consensus"):
                     sym_issues.append(f"  WARN  {field} is NULL")
                 else:
                     sym_issues.append(f"  MISS  {field} is NULL")
 
-        # ── Stale data ────────────────────────────────────────────────────
         if t["last_updated"]:
             try:
                 updated = dateutil.parser.parse(t["last_updated"]).replace(tzinfo=None)
@@ -401,7 +368,6 @@ def export_db_health(conn):
         else:
             sym_issues.append(f"  MISS  last_updated is NULL")
 
-        # ── Annual / ETF data rows ────────────────────────────────────────
         if is_etf:
             rows = conn.execute(
                 "SELECT * FROM etf_data WHERE symbol=? ORDER BY fiscal_year", (sym,)
@@ -453,24 +419,17 @@ def export_db_health(conn):
     print(f"  → db_health.txt   ({len(issues)} tickers with issues, {issue_count} total flags)")
 
 
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. DATA DOWNLOAD
 # ─────────────────────────────────────────────────────────────────────────────
 
 def safe_row(df, *candidates):
-    """Return first matching row from a DataFrame, or None."""
     for name in candidates:
         if name in df.index:
             return df.loc[name]
     return None
 
 def download_ticker(symbol, years_back):
-    """
-    Pull annual fundamentals + price history from Yahoo Finance.
-    Returns a dict with aligned year arrays, or None on failure.
-    """
     print(f"  Downloading {symbol} ...", end=" ", flush=True)
     try:
         t = yf.Ticker(symbol)
@@ -479,7 +438,6 @@ def download_ticker(symbol, years_back):
         bs    = t.balance_sheet
         cf    = t.cashflow
         hist  = t.history(period="max", interval="1mo")
-
 
         if inc.empty:
             print("FAILED (no income data)")
@@ -601,8 +559,8 @@ def download_ticker(symbol, years_back):
         analyst_low   = info.get("targetLowPrice")
         analyst_high  = info.get("targetHighPrice")
         consensus     = info.get("recommendationKey", "").replace("_", " ").title()
-        trailing_pe = info.get("trailingPE")
-        forward_pe = info.get("forwardPE")
+        trailing_pe   = info.get("trailingPE")
+        forward_pe    = info.get("forwardPE")
 
         print("OK")
         return {
@@ -624,8 +582,8 @@ def download_ticker(symbol, years_back):
             "analyst_low":   analyst_low,
             "analyst_high":  analyst_high,
             "consensus":     consensus,
-            "trailing_pe": trailing_pe,
-            "forward_pe": forward_pe
+            "trailing_pe":   trailing_pe,
+            "forward_pe":    forward_pe,
         }
 
     except Exception as e:
@@ -633,7 +591,6 @@ def download_ticker(symbol, years_back):
         return None
 
 def download_etf(symbol, years_back):
-    """Pull ETF price history and distributions from Yahoo Finance."""
     print(f"  Downloading {symbol} (ETF) ...", end=" ", flush=True)
     try:
         t    = yf.Ticker(symbol)
@@ -667,11 +624,11 @@ def download_etf(symbol, years_back):
 
         print("OK")
         return {
-            "symbol":       symbol,
-            "name":         info.get("longName", symbol),
-            "quote_type":   "ETF",
-            "years":        years,
-            "prices":       prices,
+            "symbol":        symbol,
+            "name":          info.get("longName", symbol),
+            "quote_type":    "ETF",
+            "years":         years,
+            "prices":        prices,
             "distributions": distributions,
             "annual_returns": annual_returns,
             "expense_ratio": info.get("annualReportExpenseRatio") or info.get("expenseRatio"),
@@ -706,6 +663,39 @@ def add_zero_line(ax):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 3b. TRIM HELPER
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Called immediately after DB load so every downstream plot/table/calculation
+# sees only the years the user asked for.  The DB always stores the full
+# history; trimming is a display-time operation only.
+#
+# Without this, a ticker with 30 years in the DB would pollute:
+#   • chart x-axes (showing 30 years when user asked for 11)
+#   • total_return, best/worst year, avg_return, volatility (all use full list)
+#   • EPS CAGR (start year would be 19 years earlier than intended)
+
+STOCK_LIST_FIELDS = [
+    "years", "prices", "eps", "pe", "roe", "bvps",
+    "debt_assets", "ocfps", "fcfps", "revps", "divps",
+]
+ETF_LIST_FIELDS = ["years", "prices", "distributions", "annual_returns"]
+
+
+def trim_to_years(d: dict, years_back: int) -> dict:
+    """
+    Return a shallow copy of d with every year-aligned list sliced to
+    the most recent `years_back` entries.  Non-list fields are untouched.
+    """
+    trimmed = dict(d)
+    fields = ETF_LIST_FIELDS if d.get("quote_type") == "ETF" else STOCK_LIST_FIELDS
+    for f in fields:
+        if f in trimmed and isinstance(trimmed[f], list):
+            trimmed[f] = trimmed[f][-years_back:]
+    return trimmed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 4. PLOT HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -718,7 +708,7 @@ STYLE = {
     "grid.linewidth":    0.8,
     "axes.facecolor":    "white",
     "figure.facecolor":  "white",
-    "patch.linewidth":   0,          # kills white seams on all bar charts
+    "patch.linewidth":   0,
     "patch.edgecolor":   "none",
 }
 
@@ -781,9 +771,8 @@ def plot_single_ticker(d, color):
     ax3b = ax3.twinx()
     ax3b.set_axisbelow(True)
     ax3b.grid(False)
-
     ax3.bar(yrs, clean(d["bvps"]), color=color, alpha=0.50, linewidth=0, edgecolor="none", label="BV/Share ($)")
-    ax3b.plot(yrs, clean(d["roe"]), color="#EF4444", linewidth=2,marker="s", markersize=6, label="ROE (%)")
+    ax3b.plot(yrs, clean(d["roe"]), color="#EF4444", linewidth=2, marker="s", markersize=6, label="ROE (%)")
     ax3.set_title("Book Value/Share & ROE (%)", fontsize=10, fontweight="bold")
     ax3.set_xticks(x[::2]); ax3.set_xticklabels(yrs[::2], fontsize=8)
     ax3.tick_params(axis="y", labelsize=8)
@@ -943,104 +932,77 @@ def plot_stock_table(data_list, colors, years_back):
         row = []
         crow = []
 
-        # Name
-        row.append(d.get("name", ""))
-        crow.append("#EAF4FB")
+        row.append(d.get("name", "")); crow.append("#EAF4FB")
 
-        # Current price
         cur_price = d.get("current_price")
         if cur_price is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
-            row.append(f"${float(cur_price):,.2f}");
-            crow.append("#EAF4FB")
+            row.append(f"${float(cur_price):,.2f}"); crow.append("#EAF4FB")
 
-        # EPS CAGR
         val = eps_cagr(d["eps"], d["years"])
         if val is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
             row.append(f"{val:+.1f}%")
             crow.append("#D4EDDA" if val >= 0 else "#F8D7DA")
 
-        # Pre-calculate P/E values needed for ratio
         cur_pe = d.get("trailing_pe")
         cur_pe = float(cur_pe) if cur_pe is not None else None
         fwd_pe = d.get("forward_pe")
         fwd_pe = float(fwd_pe) if fwd_pe is not None else None
         avg_pe = pe_avg_5yr(d["pe"])
 
-        # Fwd/Avg P/E ratio — most important valuation signal
         if fwd_pe is not None and avg_pe is not None and avg_pe > 0:
             ratio = round(fwd_pe / avg_pe, 2)
             row.append(f"{ratio:.2f}x")
             val_c = "#D4EDDA" if ratio < 0.8 else ("#FFF3CD" if ratio <= 1.1 else "#F8D7DA")
             crow.append(val_c)
         else:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
 
-        # Forward P/E
         if fwd_pe is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
-            row.append(f"{fwd_pe:.1f}x");
-            crow.append("#FFF9E6")
+            row.append(f"{fwd_pe:.1f}x"); crow.append("#FFF9E6")
 
-        # Trailing P/E
         if cur_pe is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
-            row.append(f"{cur_pe:.1f}x");
-            crow.append("#FFF9E6")
+            row.append(f"{cur_pe:.1f}x"); crow.append("#FFF9E6")
 
-        # 5yr avg P/E
         if avg_pe is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
             cell_c = "#FFF9E6"
             if cur_pe is not None:
                 cell_c = "#D4EDDA" if cur_pe < avg_pe else "#F8D7DA"
-            row.append(f"{avg_pe:.1f}x");
-            crow.append(cell_c)
+            row.append(f"{avg_pe:.1f}x"); crow.append(cell_c)
 
-        # FCF/Share latest
         fcf_lat = latest(d["fcfps"])
         if np.isnan(fcf_lat):
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
             row.append(f"${fcf_lat:.2f}")
             crow.append("#D4EDDA" if fcf_lat >= 0 else "#F8D7DA")
 
-        # FCF/Share 3yr avg
         fcf_avg = avg_last_n(d["fcfps"], 3)
         if fcf_avg is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
             row.append(f"${fcf_avg:.2f}")
             crow.append("#D4EDDA" if fcf_avg >= 0 else "#F8D7DA")
 
-        # ROE latest
         roe_lat = latest(d["roe"])
         if np.isnan(roe_lat):
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
             row.append(f"{roe_lat:.1f}%")
             crow.append("#D4EDDA" if roe_lat >= 15 else ("#FFF3CD" if roe_lat >= 8 else "#F8D7DA"))
 
-        # ROE 3yr avg
         roe_avg = avg_last_n(d["roe"], 3)
         if roe_avg is None:
-            row.append("N/A");
-            crow.append("#F0F0F0")
+            row.append("N/A"); crow.append("#F0F0F0")
         else:
             row.append(f"{roe_avg:.1f}%")
             crow.append("#D4EDDA" if roe_avg >= 15 else ("#FFF3CD" if roe_avg >= 8 else "#F8D7DA"))
@@ -1120,13 +1082,12 @@ def plot_snapshot(data_list, colors):
                       for c, v in zip(colors, vals)]
         vals_plot = [0 if np.isnan(v) else v for v in vals]
         ax.bar(x, vals_plot, color=bar_colors, alpha=1.0, width=0.6, linewidth=0, edgecolor="none")
-        ax.set_xticks(x);
+        ax.set_xticks(x)
         ax.set_xticklabels(syms, fontsize=11, fontweight="bold", rotation=45, ha="right")
         ax.set_title(title, fontsize=10, fontweight="bold")
         ax.tick_params(axis="y", labelsize=8)
         add_zero_line(ax)
         ax.grid(False)
-
 
         for xi, v in enumerate(vals_plot):
             if v == 0:
@@ -1142,8 +1103,6 @@ def plot_snapshot(data_list, colors):
     return fig
 
 def cagr(prices, n):
-    """Calculate n-year CAGR from the most recent prices. Returns None if not enough data."""
-    # Clean None values from the end first
     clean_prices = [p for p in prices if p is not None]
     if len(clean_prices) < n + 1:
         return None
@@ -1173,7 +1132,6 @@ def plot_etf(etf_list, colors, years_back):
     yrs = year_labels(base_years)
     x   = np.arange(len(yrs))
 
-    # ── Top Left — Price history ──────────────────────────────────────────
     for d, col in zip(etf_list, colors):
         vals = []
         for yr in base_years:
@@ -1188,7 +1146,6 @@ def plot_etf(etf_list, colors, years_back):
     ticker_legend(ax0, etf_list, colors)
     add_zero_line(ax0)
 
-    # ── Top Right — Annual return % ───────────────────────────────────────
     for d, col in zip(etf_list, colors):
         vals = []
         for yr in base_years:
@@ -1203,7 +1160,6 @@ def plot_etf(etf_list, colors, years_back):
     ticker_legend(ax1, etf_list, colors)
     add_zero_line(ax1)
 
-    # ── Bottom Left — Annual distributions ───────────────────────────────
     width = 0.8 / max(n, 1)
     for idx, (d, col) in enumerate(zip(etf_list, colors)):
         vals = []
@@ -1221,7 +1177,6 @@ def plot_etf(etf_list, colors, years_back):
     ticker_legend(ax2, etf_list, colors)
     add_zero_line(ax2)
 
-    # ── Bottom Right — Cumulative total return (indexed to 100) ──────────
     for d, col in zip(etf_list, colors):
         raw = []
         for yr in base_years:
@@ -1230,7 +1185,6 @@ def plot_etf(etf_list, colors, years_back):
             else:
                 raw.append(None)
 
-        # Find first non-None price to use as base
         base_price = next((v for v in raw if v is not None), None)
         if base_price is None:
             continue
@@ -1270,16 +1224,12 @@ def plot_etf_table(etf_list, colors, years_back):
     for d in etf_list:
         row = []
         colors_row = []
-        # Name
-        row.append(d.get("name", ""))
-        colors_row.append("#EAF4FB")
+        row.append(d.get("name", "")); colors_row.append("#EAF4FB")
 
-        # CAGR columns
         for p in periods:
             val = cagr(d["prices"], p)
             if val is None:
-                row.append("N/A")
-                colors_row.append("#F0F0F0")
+                row.append("N/A"); colors_row.append("#F0F0F0")
             else:
                 row.append(f"{val:+.1f}%")
                 colors_row.append("#D4EDDA" if val >= 0 else "#F8D7DA")
@@ -1287,34 +1237,25 @@ def plot_etf_table(etf_list, colors, years_back):
         valid_returns = [(yr, r) for yr, r in zip(d["years"], d["annual_returns"])
                          if r is not None]
 
-        # Best year
         if valid_returns:
             best_yr, best_val = max(valid_returns, key=lambda x: x[1])
-            row.append(f"{best_yr}  {best_val:+.1f}%")
-            colors_row.append("#D4EDDA")
+            row.append(f"{best_yr}  {best_val:+.1f}%"); colors_row.append("#D4EDDA")
         else:
-            row.append("N/A")
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
-        # Worst year
         if valid_returns:
             worst_yr, worst_val = min(valid_returns, key=lambda x: x[1])
-            row.append(f"{worst_yr}  {worst_val:+.1f}%")
-            colors_row.append("#F8D7DA")
+            row.append(f"{worst_yr}  {worst_val:+.1f}%"); colors_row.append("#F8D7DA")
         else:
-            row.append("N/A")
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
-        # Average annual return
         if valid_returns:
             avg = round(sum(r for _, r in valid_returns) / len(valid_returns), 1)
             row.append(f"{avg:+.1f}%")
             colors_row.append("#D4EDDA" if avg >= 0 else "#F8D7DA")
         else:
-            row.append("N/A")
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
-        # Volatility — sample std dev of annual returns
         if len(valid_returns) >= 2:
             ret_vals = [r for _, r in valid_returns]
             vol = round(float(np.std(ret_vals, ddof=1)), 1)
@@ -1322,20 +1263,17 @@ def plot_etf_table(etf_list, colors, years_back):
             vol_color = "#D4EDDA" if vol < 12 else ("#FFF3CD" if vol < 20 else "#F8D7DA")
             colors_row.append(vol_color)
         else:
-            row.append("N/A")
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
-        # Total return — first to last available price
+        # Total return — uses only the trimmed window (already sliced to years_back)
         clean_prices = [p for p in d["prices"] if p is not None]
         if len(clean_prices) >= 2:
             total_ret = round((clean_prices[-1] / clean_prices[0] - 1) * 100, 1)
             row.append(f"{total_ret:+.0f}%")
             colors_row.append("#D4EDDA" if total_ret >= 0 else "#F8D7DA")
         else:
-            row.append("N/A")
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
-        # Yield % — latest distribution / current price
         try:
             latest_dist = next(
                 (d["distributions"][i] for i in range(len(d["years"]) - 1, -1, -1)
@@ -1345,20 +1283,15 @@ def plot_etf_table(etf_list, colors, years_back):
             cur_price = d.get("current_price")
             if latest_dist and cur_price and cur_price > 0:
                 yield_pct = round(latest_dist / cur_price * 100, 2)
-                row.append(f"{yield_pct:.2f}%")
-                colors_row.append("#EAF4FB")
+                row.append(f"{yield_pct:.2f}%"); colors_row.append("#EAF4FB")
             else:
-                row.append("N/A")
-                colors_row.append("#F0F0F0")
+                row.append("N/A"); colors_row.append("#F0F0F0")
         except Exception:
-            row.append("N/A")
-            colors_row.append("#F0F0F0")
+            row.append("N/A"); colors_row.append("#F0F0F0")
 
         table_data.append(row)
         cell_colors.append(colors_row)
 
-    # Size the figure height to the number of tickers — stays compact for 2,
-    # grows gracefully for 10+
     fig_height = max(4.5, 2.0 + len(etf_list) * 0.9)
     fig, ax = plt.subplots(figsize=(18, fig_height), facecolor="white")
     fig.suptitle("ETF Performance Summary", fontsize=13, fontweight="bold", y=0.95)
@@ -1400,11 +1333,10 @@ def plot_etf_table(etf_list, colors, years_back):
 def export_session(stock_list, stock_colors, etf_list, etf_colors,
                    figs_stock_single, fig_comparison, fig_snapshot,
                    fig_etf, fig_etf_table, fig_stock_table, years_back):
-    """Export all charts as PNG and scorecard data as CSV."""
     today = datetime.now().strftime("%Y-%m-%d")
-    out   = make_session_folder(stock_list, etf_list)   # ← session folder
+    out   = make_session_folder(stock_list, etf_list)
     saved = []
-    # ── Stock scorecard CSV ───────────────────────────────────────────────
+
     if stock_list:
         path = os.path.join(out, f"{today}_scorecard.csv")
 
@@ -1457,9 +1389,6 @@ def export_session(stock_list, stock_colors, etf_list, etf_colors,
                 })
         saved.append(f"{today}_scorecard.csv")
 
-
-
-    # ── ETF summary CSV ───────────────────────────────────────────────────
     if etf_list:
         path = os.path.join(out, f"{today}_etf_summary.csv")
         periods = sorted(set([1, 3, 5, 10, years_back - 1]))
@@ -1516,7 +1445,6 @@ def export_session(stock_list, stock_colors, etf_list, etf_colors,
                 writer.writerow(row)
         saved.append(f"{today}_etf_summary.csv")
 
-    # ── PNG exports ───────────────────────────────────────────────────────
     for d, fig in zip(stock_list, figs_stock_single):
         fname = f"{today}_{d['symbol']}.png"
         fig.savefig(os.path.join(out, fname), dpi=150, bbox_inches="tight")
@@ -1538,7 +1466,6 @@ def export_session(stock_list, stock_colors, etf_list, etf_colors,
     return saved, out
 
 def make_session_folder(stock_list, etf_list):
-    """Create a dated session folder under DB_OUTPUT and return its path."""
     all_syms = [d["symbol"] for d in stock_list] + [d["symbol"] for d in etf_list]
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
 
@@ -1559,7 +1486,6 @@ def make_session_folder(stock_list, etf_list):
 
 def main():
     print(f"\n{'='*60}")
-    print(f"\n{'='*60}")
     print(f"  Fundamental Dashboard — starting up")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
@@ -1570,39 +1496,37 @@ def main():
     print_db_summary(conn)
     print()
 
-
-    # force_refresh = "--refresh" in sys.argv
-
     selected, YEARS_BACK, force_refresh, do_export = pick_tickers(DB_PATH)
     if not selected:
         print("No tickers selected. Exiting.")
         sys.exit(0)
 
     stock_list, stock_colors = [], []
-    etf_list, etf_colors = [], []
+    etf_list,   etf_colors   = [], []
 
     for i, sym in enumerate(selected):
-
         try:
             col = get_color(i)
             print(f"  Processing {sym}...")
-            # Check if already known as ETF in DB
+
+            # ── ETF cached ────────────────────────────────────────────────
             cached_etf = load_etf_from_db(conn, sym)
             if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
                 print(f"  {sym}: loaded from DB as ETF")
-                etf_list.append(cached_etf)
+                etf_list.append(trim_to_years(cached_etf, YEARS_BACK))
                 etf_colors.append(col)
                 continue
 
+            # ── Stock cached ──────────────────────────────────────────────
             cached = load_ticker_from_db(conn, sym)
             if cached and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
                 print(f"  {sym}: loaded from DB (use --refresh to update)")
-                stock_list.append(cached)
+                stock_list.append(trim_to_years(cached, YEARS_BACK))
                 stock_colors.append(col)
                 continue
 
-            # Need to download — detect type first
-            t = yf.Ticker(sym)
+            # ── Download ──────────────────────────────────────────────────
+            t          = yf.Ticker(sym)
             quote_type = t.info.get("quoteType", "EQUITY")
 
             if quote_type == "ETF":
@@ -1610,25 +1534,24 @@ def main():
                 if d:
                     upsert_etf(conn, d)
                     merged = load_etf_from_db(conn, sym)
-                    etf_list.append(merged if merged else d)
+                    etf_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
                     etf_colors.append(col)
-
             else:
                 d = download_ticker(sym, YEARS_BACK)
                 if d:
                     upsert_ticker(conn, d)
                     merged = load_ticker_from_db(conn, sym)
-                    stock_list.append(merged if merged else d)
+                    stock_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
                     stock_colors.append(col)
                 else:
                     print(f"  !! {sym} returned None — download failed")
+
         except Exception as e:
             import traceback
             print(f"  !! EXCEPTION processing {sym}: {e}")
             traceback.print_exc()
 
-
-    # ── Debug exports (always written, reflect full DB state) ─────────────
+    # ── Debug exports ─────────────────────────────────────────────────────
     print("\nExporting debug files:")
     export_summary_txt(conn)
     export_full_csv(conn)
@@ -1645,15 +1568,13 @@ def main():
     print(f"Database: {DB_PATH}")
     print("Generating charts...\n")
 
-
-
     apply_style()
     figs_stock_single = []
-    fig_stock_table = None
-    fig_comparison = None
-    fig_snapshot = None
-    fig_etf = None
-    fig_etf_table = None
+    fig_stock_table   = None
+    fig_comparison    = None
+    fig_snapshot      = None
+    fig_etf           = None
+    fig_etf_table     = None
 
     for d, col in zip(stock_list, stock_colors):
         fig = plot_single_ticker(d, col)
@@ -1662,7 +1583,7 @@ def main():
 
     if stock_list:
         show_stock_table(stock_list, stock_colors, YEARS_BACK)
-        fig_stock_table = None   # no longer a matplotlib figure
+        fig_stock_table = None
 
     if len(stock_list) > 1:
         fig_comparison = plot_comparison(stock_list, stock_colors)
@@ -1674,9 +1595,8 @@ def main():
         fig_etf = plot_etf(etf_list, etf_colors, YEARS_BACK)
         fig_etf.canvas.manager.set_window_title("ETF Overview")
         show_etf_table(etf_list, etf_colors, YEARS_BACK)
-        fig_etf_table = None   # no longer a matplotlib figure
+        fig_etf_table = None
 
-    # Collect all figs for plt.show()
     figs = figs_stock_single[:]
     for f in [fig_stock_table, fig_comparison, fig_snapshot, fig_etf, fig_etf_table]:
         if f is not None:
@@ -1686,7 +1606,6 @@ def main():
         print("\nNo data to display.")
         sys.exit(1)
 
-    # ── Export if requested ───────────────────────────────────────────────
     if do_export:
         saved, session_folder = export_session(
             stock_list, stock_colors, etf_list, etf_colors,
@@ -1698,7 +1617,6 @@ def main():
         for f in saved:
             print(f"    {f}")
 
-
     plt.show()
 
 def is_stale(conn, symbol, years_back, days=90):
@@ -1708,7 +1626,6 @@ def is_stale(conn, symbol, years_back, days=90):
     if not row:
         return True
 
-    # Check if we have enough years of data
     count = conn.execute(
         "SELECT COUNT(*) FROM annual_data WHERE symbol = ?", (symbol,)
     ).fetchone()[0]
