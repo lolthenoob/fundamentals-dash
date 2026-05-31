@@ -134,11 +134,20 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
                             highlightcolor=CLR_ACCENT,
                             highlightbackground="#CCCCCC")
     search_entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
+
+    # "Add as new" button — lives in the search bar row, hidden until needed
+    add_new_btn = tk.Button(search_frame, text="", bg="#E06C00", fg="white",
+                            font=bold, relief="flat", padx=12, pady=4,
+                            cursor="hand2")
+    # (command wired below after _add_new_ticker is defined)
+
     search_entry.focus_set()
 
     # ── Yahoo autocomplete ────────────────────────────────────────────────
-    _ac_after   = None
-    _ac_rows    = []   # currently shown suggestion frames
+    _ac_after        = None
+    _ac_rows         = []   # currently shown suggestion frames
+    _ac_last_results = []  # last yahoo results, for re-render after tick
+    _session_added   = set()  # tickers added this session from Yahoo
 
     def _clear_suggestions():
         for w in _ac_rows:
@@ -148,49 +157,74 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
     def _yahoo_search(q):
         try:
             url = (
+                #"https://query1.finance.yahoo.com/v1/finance/search"
+                #f"?q={urllib.parse.quote(q)}&quotesCount=20&newsCount=0&enableFuzzyQuery=true"
                 "https://query1.finance.yahoo.com/v1/finance/search"
-                f"?q={urllib.parse.quote(q)}&quotesCount=7&newsCount=0&enableFuzzyQuery=false"
+                f"?q={urllib.parse.quote(q)}&quotesCount=20&newsCount=0&enableFuzzyQuery=false&enableCccBoost=false&enableEnhancedTrivialQuery=true"
             )
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read())
             quotes = data.get("quotes", [])
             results = [
-                (r.get("symbol", ""), r.get("longname") or r.get("shortname") or "")
+                (r.get("symbol", ""), r.get("longname") or r.get("shortname") or "", r.get("symbol") in check_vars)
                 for r in quotes if r.get("symbol")
-                and r.get("symbol") not in check_vars   # skip already in DB
             ]
         except Exception:
             results = []
         root.after(0, lambda: _show_suggestions(results))
 
     def _show_suggestions(results):
+        nonlocal _ac_last_results
+        _ac_last_results = results
         _clear_suggestions()
         if not results:
             return
-        # Divider
         div = tk.Frame(inner, bg="#CCCCCC", height=1)
         div.pack(fill="x", pady=(6, 0))
         _ac_rows.append(div)
-        lbl = tk.Label(inner, text="  Yahoo suggestions — click ＋ to add",
-                       bg=CLR_BG, fg=CLR_SUBTEXT, font=mono, anchor="w")
+        lbl = tk.Label(inner, text="  Yahoo suggestions (max 7)",
+                       bg=CLR_BG, fg=CLR_SUBTEXT, font=bold, anchor="w")
         lbl.pack(fill="x")
         _ac_rows.append(lbl)
 
-        for i, (sym, name) in enumerate(results):
+        for i, (sym, name, in_db) in enumerate(results):
             bg = CLR_ROW_A if i % 2 == 0 else CLR_ROW_B
             row = tk.Frame(inner, bg=bg, pady=ROW_PADY, padx=ROW_PADX)
             row.pack(fill="x")
             _ac_rows.append(row)
 
-            tk.Label(row, text=f"{sym:<8}", font=bold,
-                     bg=bg, fg=CLR_ACCENT, anchor="w").pack(side="left")
+            if in_db:
+                existing_var = check_vars.get(sym)
+                is_checked = existing_var.get() if existing_var else False
+                btn = tk.Button(row, text="☑" if is_checked else "☐",
+                                font=tick_font,
+                                fg=CLR_ACCENT if is_checked else "#AAAAAA",
+                                bg=bg, activebackground=bg,
+                                relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+                btn.pack(side="left")
+                def _make_db_toggle(s):
+                    def _toggle():
+                        _add_new_ticker_sym(s)
+                    return _toggle
+                btn.config(command=_make_db_toggle(sym))
+                tk.Label(row, text=f"{sym:<8}", font=bold,
+                         bg=bg, fg=CLR_ACCENT, anchor="w").pack(side="left")
+            else:
+                btn = tk.Button(row, text="☐", font=tick_font,
+                                fg="#AAAAAA", bg=bg, activebackground=bg,
+                                relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+                btn.pack(side="left")
+                def _make_new_toggle(s, n):
+                    def _toggle():
+                        _add_new_ticker_sym(s, n)
+                    return _toggle
+                btn.config(command=_make_new_toggle(sym, name))
+                tk.Label(row, text=f"{sym:<8}", font=bold,
+                         bg=bg, fg="#E06C00", anchor="w").pack(side="left")
+
             tk.Label(row, text=name, font=mono,
-                     bg=bg, fg=CLR_SUBTEXT, anchor="w").pack(side="left", fill="x", expand=True)
-            tk.Button(row, text="＋ Add", bg="#E06C00", fg="white",
-                      font=bold, relief="flat", padx=8, pady=2, cursor="hand2",
-                      command=lambda s=sym, n=name: _add_new_ticker_sym(s, n)
-                      ).pack(side="right", padx=4)
+                     bg=bg, fg=CLR_SUBTEXT, anchor="w").pack(side="left", fill="x")
 
     def _on_search_change(*_):
         nonlocal _ac_after
@@ -209,12 +243,6 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
     # ── Scrollable list ───────────────────────────────────────────────────
     list_outer = tk.Frame(root, bg=CLR_BG, padx=14)
     list_outer.pack(fill="both", expand=True)
-
-    # "Add as new" button — lives inside list_outer, hidden until needed
-    add_new_btn = tk.Button(list_outer, text="", bg="#E06C00", fg="white",
-                            font=bold, relief="flat", padx=12, pady=6,
-                            cursor="hand2")
-    # (command wired below after _add_new_ticker is defined)
 
     canvas = tk.Canvas(list_outer, bg=CLR_BG, highlightthickness=0)
     scrollbar = ttk.Scrollbar(list_outer, orient="vertical", command=canvas.yview)
@@ -290,11 +318,37 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
         v.trace_add("write", _update_count)
 
     # ── Add new ticker ────────────────────────────────────────────────────
+    def _make_session_toggle(sym, var, btn):
+        """Toggle for session-added tickers: untick removes row and re-fires Yahoo."""
+        def _toggle():
+            if var.get():
+                # currently checked → uncheck, destroy row, re-fire yahoo
+                var.set(False)
+                if sym in row_frames:
+                    row_frames[sym].destroy()
+                    del row_frames[sym]
+                if sym in tick_buttons:
+                    del tick_buttons[sym]
+                if sym in check_vars:
+                    del check_vars[sym]
+                _session_added.discard(sym)
+                _update_summary()
+                _update_count()
+                # re-fire yahoo with current search so sym reappears in suggestions
+                q = search_var.get().strip()
+                if q:
+                    threading.Thread(target=_yahoo_search, args=(q,), daemon=True).start()
+            else:
+                var.set(True)
+                btn.config(text="☑", fg=CLR_ACCENT)
+        return _toggle
+
     def _add_new_ticker_sym(sym, name="(new — will download)"):
         """Add a ticker row by symbol+name, select it, clear search."""
         if sym not in check_vars:
             var = tk.BooleanVar(value=True)
             check_vars[sym] = var
+            _session_added.add(sym)
 
             bg = CLR_ROW_A if len(check_vars) % 2 == 0 else CLR_ROW_B
             row = tk.Frame(inner, bg=bg, pady=ROW_PADY, padx=ROW_PADX)
@@ -306,7 +360,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
                             relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
             btn.pack(side="left")
             tick_buttons[sym] = btn
-            btn.config(command=_make_toggle(var, btn))
+            btn.config(command=_make_session_toggle(sym, var, btn))
 
             tk.Label(row, text=f"{sym:<8}", font=bold,
                      bg=bg, fg="#E06C00", anchor="w").pack(side="left")
@@ -321,11 +375,11 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
             if sym in tick_buttons:
                 tick_buttons[sym].config(text="☑", fg=CLR_ACCENT)
 
-        search_var.set("")
-        _clear_suggestions()
-        add_new_btn.pack_forget()
         _update_summary()
         _update_count()
+        if _ac_last_results:
+            _ac_last_results[:] = [(s, n, d) for s, n, d in _ac_last_results if s != sym]
+            _show_suggestions(_ac_last_results)
 
     def _add_new_ticker():
         sym = search_var.get().strip().upper()
@@ -357,7 +411,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
         exact_match = q in {sym.upper() for sym, _ in available}
         if q and not exact_match:
             add_new_btn.config(text=f"＋  Add \"{q}\" as new ticker")
-            add_new_btn.pack(fill="x", pady=4)
+            add_new_btn.pack(side="left", padx=(8, 0))
         else:
             add_new_btn.pack_forget()
 
