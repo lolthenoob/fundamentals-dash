@@ -6,6 +6,16 @@ A desktop dashboard that downloads, caches, and charts 10+ years of per-share fu
 
 ---
 
+## Releases
+
+**[⬇ Download the latest release](https://github.com/lolthenoob/fundamentals-dash/releases/latest)**
+
+The seed database (`fundamentals.db`) ships as a release asset — grab it from the link above. It contains 10 years of pre-populated fundamentals built from manually sourced data, extending well beyond Yahoo Finance's ~4–5 year limit.
+
+Re-download it periodically to pick up the latest additions.
+
+---
+
 ## Quick start
 
 **1. Clone the repo**
