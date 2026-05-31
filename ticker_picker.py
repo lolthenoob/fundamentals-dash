@@ -64,7 +64,7 @@ def _parse_bulk(raw: str) -> list[str]:
     return result
 
 
-def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
+def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int, bool, bool]:
     available: list[tuple[str, str]] = []
 
     if os.path.exists(db_path):
@@ -91,6 +91,12 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
     root.title("📈  Select Tickers")
     root.configure(bg=CLR_BG)
     root.resizable(True, True)
+    try:
+        # Lock DPI scaling so font sizes don't shift when widgets change
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
 
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -739,7 +745,8 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
         if not result_tickers:
             return  # nothing selected, stay open
 
-        # Hide all picker widgets, reveal status panel
+        _saved_geometry = root.geometry()
+
         hdr.pack_forget()
         summary_frame.pack_forget()
         toggle_frame.pack_forget()
@@ -747,8 +754,14 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
         list_outer.pack_forget()
         ctrl.pack_forget()
         status_panel.pack(fill="both", expand=True)
+        root.geometry(_saved_geometry)
         root.update_idletasks()
-        root.quit()   # exit mainloop but keep window alive
+        if _run_state is not None:
+            _run_state["selected"]      = result_tickers
+            _run_state["years_back"]    = result_years
+            _run_state["force_refresh"] = result_refresh
+            _run_state["do_export"]     = result_export
+        root.quit()
 
     def _make_toggle_btn(frame, label, var, side="right", padx=(0, 8)):
         container = tk.Frame(frame, bg=CLR_BG)
@@ -775,6 +788,9 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
 
     # ── Status panel (hidden until Go is pressed) ─────────────────────────
     status_panel = tk.Frame(root, bg=CLR_BG)
+    # Hidden label keeps the tick_font in the widget tree so tkinter's
+    # font scaling reference doesn't shift when the picker hides its checkboxes
+    tk.Label(status_panel, text="", font=tick_font, bg=CLR_BG).place(x=0, y=0)
 
     status_hdr = tk.Frame(status_panel, bg=CLR_ACCENT, pady=12)
     status_hdr.pack(fill="x")
@@ -788,7 +804,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
     log_outer.pack(fill="both", expand=True)
     log_text = tk.Text(
         log_outer,
-        font=("Consolas", 11),
+        font=mono,
         bg="white", fg=CLR_TEXT,
         relief="flat",
         wrap="word",
@@ -816,6 +832,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
     def _run_again():
         nonlocal result_tickers, result_years, result_refresh, result_export
         result_tickers = []
+        _saved_geo = root.geometry()
         run_again_btn.pack_forget()
         status_panel.pack_forget()
         for v in check_vars.values():
@@ -834,15 +851,23 @@ def pick_tickers(db_path: str) -> tuple[list[str], int, bool, bool]:
         search_frame.pack(fill="x")
         list_outer.pack(fill="both", expand=True)
         ctrl.pack(fill="x")
+        root.geometry(_saved_geo)
         root.update_idletasks()
-        root.mainloop()
+        # Re-enter mainloop on the SAME window so user can pick again.
+        # _go() will write the new selection to _run_state and call root.quit(),
+        # which returns here, and then we return to main()'s _root.mainloop() call
+        # which also exits — main() reads _run_state for the new selection.
+        # root.mainloop()
 
     run_again_btn.config(command=_run_again)
-
     root.bind("<Return>", lambda e: _go())
+
+    def _on_close():
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
     root.mainloop()
     return result_tickers, result_years, result_refresh, result_export, root, log_text, status_title_var, run_again_btn, status_bottom
-
 
 def post_status(log_text, status_title_var, message, title=None):
     """

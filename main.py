@@ -1490,155 +1490,168 @@ def main():
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
 
-    conn = get_db()
-
-    print("Database contents before this run:")
-    print_db_summary(conn)
-    print()
+    # Pick tickers — creates the Tk window, returns after Go is pressed
+    _run_state = {"selected": [], "years_back": 11, "force_refresh": False, "do_export": False}
 
     selected, YEARS_BACK, force_refresh, do_export, \
-        _root, _log, _title_var, _run_again_btn, _status_bottom = pick_tickers(DB_PATH)
+        _root, _log, _title_var, _run_again_btn, _status_bottom = pick_tickers(DB_PATH, _run_state)
 
     if not selected:
         print("No tickers selected. Exiting.")
         sys.exit(0)
 
-    def log(msg, title=None):
-        """Write to both console and the status window."""
-        print(msg)
-        post_status(_log, _title_var, msg, title=title)
+    while True:
+        # Re-bind log to the current window widgets each iteration
+        _cur_log, _cur_title = _log, _title_var
 
-    stock_list, stock_colors = [], []
-    etf_list,   etf_colors   = [], []
+        def log(msg, title=None, _l=_cur_log, _t=_cur_title):
+            print(msg)
+            post_status(_l, _t, msg, title=title)
 
-    log(f"Processing {len(selected)} ticker(s)…", title="Downloading data…")
+        conn = get_db()
+        print("Database contents:")
+        print_db_summary(conn)
+        print()
 
-    for i, sym in enumerate(selected):
-        try:
-            col = get_color(i)
+        stock_list, stock_colors = [], []
+        etf_list,   etf_colors   = [], []
 
-            # ── ETF cached ────────────────────────────────────────────────
-            cached_etf = load_etf_from_db(conn, sym)
-            if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
-                log(f"  ✔ {sym}  loaded from DB (ETF)")
-                etf_list.append(trim_to_years(cached_etf, YEARS_BACK))
-                etf_colors.append(col)
-                continue
+        log(f"Processing {len(selected)} ticker(s)\u2026", title="Downloading data\u2026")
 
-            # ── Stock cached ──────────────────────────────────────────────
-            cached = load_ticker_from_db(conn, sym)
-            if cached and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
-                log(f"  ✔ {sym}  loaded from DB")
-                stock_list.append(trim_to_years(cached, YEARS_BACK))
-                stock_colors.append(col)
-                continue
+        for i, sym in enumerate(selected):
+            try:
+                col = get_color(i)
 
-            # ── Download ──────────────────────────────────────────────────
-            log(f"  ↓ {sym}  downloading…")
-            t          = yf.Ticker(sym)
-            quote_type = t.info.get("quoteType", "EQUITY")
-
-            if quote_type == "ETF":
-                d = download_etf(sym, YEARS_BACK)
-                if d:
-                    upsert_etf(conn, d)
-                    merged = load_etf_from_db(conn, sym)
-                    etf_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
+                cached_etf = load_etf_from_db(conn, sym)
+                if cached_etf and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
+                    log(f"  \u2714 {sym}  loaded from DB (ETF)")
+                    etf_list.append(trim_to_years(cached_etf, YEARS_BACK))
                     etf_colors.append(col)
-                    log(f"  ✔ {sym}  saved (ETF)")
-                else:
-                    log(f"  ✖ {sym}  download failed")
-            else:
-                d = download_ticker(sym, YEARS_BACK)
-                if d:
-                    upsert_ticker(conn, d)
-                    merged = load_ticker_from_db(conn, sym)
-                    stock_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
+                    continue
+
+                cached = load_ticker_from_db(conn, sym)
+                if cached and not force_refresh and not is_stale(conn, sym, YEARS_BACK):
+                    log(f"  \u2714 {sym}  loaded from DB")
+                    stock_list.append(trim_to_years(cached, YEARS_BACK))
                     stock_colors.append(col)
-                    log(f"  ✔ {sym}  saved")
+                    continue
+
+                log(f"  \u2193 {sym}  downloading\u2026")
+                t          = yf.Ticker(sym)
+                quote_type = t.info.get("quoteType", "EQUITY")
+
+                if quote_type == "ETF":
+                    d = download_etf(sym, YEARS_BACK)
+                    if d:
+                        upsert_etf(conn, d)
+                        merged = load_etf_from_db(conn, sym)
+                        etf_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
+                        etf_colors.append(col)
+                        log(f"  \u2714 {sym}  saved (ETF)")
+                    else:
+                        log(f"  \u2716 {sym}  download failed")
                 else:
-                    log(f"  ✖ {sym}  download failed")
+                    d = download_ticker(sym, YEARS_BACK)
+                    if d:
+                        upsert_ticker(conn, d)
+                        merged = load_ticker_from_db(conn, sym)
+                        stock_list.append(trim_to_years(merged if merged else d, YEARS_BACK))
+                        stock_colors.append(col)
+                        log(f"  \u2714 {sym}  saved")
+                    else:
+                        log(f"  \u2716 {sym}  download failed")
 
-        except Exception as e:
-            import traceback
-            log(f"  ✖ {sym}  error: {e}")
-            traceback.print_exc()
+            except Exception as e:
+                import traceback
+                log(f"  \u2716 {sym}  error: {e}")
+                traceback.print_exc()
 
-    # ── Debug exports ─────────────────────────────────────────────────────
-    log("\nExporting debug files…", title="Saving files…")
-    export_summary_txt(conn)
-    export_full_csv(conn)
-    export_db_health(conn)
-    log("  ✔ db_summary.txt  db_full.csv  db_health.txt")
+        log("\nExporting debug files\u2026", title="Saving files\u2026")
+        export_summary_txt(conn)
+        export_full_csv(conn)
+        export_db_health(conn)
+        log("  \u2714 db_summary.txt  db_full.csv  db_health.txt")
 
-    conn.close()
+        conn.close()
 
-    if not stock_list and not etf_list:
-        log("\nNo data to display.")
-        sys.exit(1)
+        if not stock_list and not etf_list:
+            log("\nNo data to display.")
+            sys.exit(1)
 
-    all_loaded = [d['symbol'] for d in stock_list] + [d['symbol'] for d in etf_list]
-    log(f"\nLoaded: {', '.join(all_loaded)}", title="Building charts…")
+        all_loaded = [d['symbol'] for d in stock_list] + [d['symbol'] for d in etf_list]
+        log(f"\nLoaded: {', '.join(all_loaded)}", title="Building charts\u2026")
 
-    apply_style()
-    figs_stock_single = []
-    fig_stock_table   = None
-    fig_comparison    = None
-    fig_snapshot      = None
-    fig_etf           = None
-    fig_etf_table     = None
+        apply_style()
+        figs_stock_single = []
+        fig_stock_table   = None
+        fig_comparison    = None
+        fig_snapshot      = None
+        fig_etf           = None
+        fig_etf_table     = None
 
-    for d, col in zip(stock_list, stock_colors):
-        log(f"  Chart: {d['symbol']}")
-        fig = plot_single_ticker(d, col)
-        fig.canvas.manager.set_window_title(f"{d['symbol']} — {d['name']}")
-        figs_stock_single.append(fig)
+        for d, col in zip(stock_list, stock_colors):
+            log(f"  Chart: {d['symbol']}")
+            fig = plot_single_ticker(d, col)
+            fig.canvas.manager.set_window_title(f"{d['symbol']} \u2014 {d['name']}")
+            figs_stock_single.append(fig)
 
-    if stock_list:
-        log("  Table: Stock Scorecard")
-        show_stock_table(stock_list, stock_colors, YEARS_BACK)
+        if stock_list:
+            log("  Table: Stock Scorecard")
+            show_stock_table(stock_list, stock_colors, YEARS_BACK)
 
-    if len(stock_list) > 1:
-        log("  Chart: Comparison")
-        fig_comparison = plot_comparison(stock_list, stock_colors)
-        fig_comparison.canvas.manager.set_window_title("Comparison — All Tickers")
-        log("  Chart: Snapshot")
-        fig_snapshot = plot_snapshot(stock_list, stock_colors)
-        fig_snapshot.canvas.manager.set_window_title("Snapshot — Latest Year")
+        if len(stock_list) > 1:
+            log("  Chart: Comparison")
+            fig_comparison = plot_comparison(stock_list, stock_colors)
+            fig_comparison.canvas.manager.set_window_title("Comparison \u2014 All Tickers")
+            log("  Chart: Snapshot")
+            fig_snapshot = plot_snapshot(stock_list, stock_colors)
+            fig_snapshot.canvas.manager.set_window_title("Snapshot \u2014 Latest Year")
 
-    if etf_list:
-        log("  Chart: ETF Overview")
-        fig_etf = plot_etf(etf_list, etf_colors, YEARS_BACK)
-        fig_etf.canvas.manager.set_window_title("ETF Overview")
-        log("  Table: ETF Scorecard")
-        show_etf_table(etf_list, etf_colors, YEARS_BACK)
+        if etf_list:
+            log("  Chart: ETF Overview")
+            fig_etf = plot_etf(etf_list, etf_colors, YEARS_BACK)
+            fig_etf.canvas.manager.set_window_title("ETF Overview")
+            log("  Table: ETF Scorecard")
+            show_etf_table(etf_list, etf_colors, YEARS_BACK)
 
-    figs = figs_stock_single[:]
-    for f in [fig_stock_table, fig_comparison, fig_snapshot, fig_etf, fig_etf_table]:
-        if f is not None:
-            figs.append(f)
+        figs = figs_stock_single[:]
+        for f in [fig_stock_table, fig_comparison, fig_snapshot, fig_etf, fig_etf_table]:
+            if f is not None:
+                figs.append(f)
 
-    if not figs:
-        log("\nNo charts to display.")
-        sys.exit(1)
+        if not figs:
+            log("\nNo charts to display.")
+            sys.exit(1)
 
-    if do_export:
-        log("\nExporting session files…", title="Exporting…")
-        saved, session_folder = export_session(
-            stock_list, stock_colors, etf_list, etf_colors,
-            figs_stock_single, fig_comparison, fig_snapshot,
-            fig_etf, fig_etf_table, fig_stock_table, YEARS_BACK,
-        )
-        log(f"  ✔ {len(saved)} files → {session_folder}")
+        if do_export:
+            log("\nExporting session files\u2026", title="Exporting\u2026")
+            saved, session_folder = export_session(
+                stock_list, stock_colors, etf_list, etf_colors,
+                figs_stock_single, fig_comparison, fig_snapshot,
+                fig_etf, fig_etf_table, fig_stock_table, YEARS_BACK,
+            )
+            log(f"  \u2714 {len(saved)} files \u2192 {session_folder}")
 
-    log("\n✔ All done — close charts when finished.", title="Charts ready")
-    _run_again_btn.pack(side="left")
+        log("\n\u2714 All done \u2014 close charts when finished.", title="Charts ready")
+        _run_again_btn.pack(side="left")
 
-    plt.show()
+        plt.show()
 
-    # Charts all closed — window stays open, subtitle updates
-    _title_var.set("Done — run again?")
-    _root.mainloop()   # keeps the window alive until Run Again or close
+        # Charts closed — wait for Run Again or window close.
+        # _run_again() will update _run_state and call root.quit().
+        # _go() will also call root.quit() after updating _run_state.
+        _title_var.set("Done \u2014 run again?")
+        _root.mainloop()
+
+        # Read whatever _run_again / _go put into the shared state dict
+        if not _run_state["selected"]:
+            print("No tickers selected. Exiting.")
+            sys.exit(0)
+        selected     = _run_state["selected"]
+        YEARS_BACK   = _run_state["years_back"]
+        force_refresh = _run_state["force_refresh"]
+        do_export    = _run_state["do_export"]
+
 
 def is_stale(conn, symbol, years_back, days=90):
     row = conn.execute(
@@ -1652,7 +1665,7 @@ def is_stale(conn, symbol, years_back, days=90):
     count  = conn.execute(
         f"SELECT COUNT(*) FROM {table} WHERE symbol = ?", (symbol,)
     ).fetchone()[0]
-    if count < years_back:
+    if count == 0:
         return True
 
     parsed = dateutil.parser.parse(row["last_updated"])
