@@ -232,7 +232,7 @@ def pick_tickers(db_path: str) -> tuple[list[str], int]:
         q = search_var.get().strip().upper()
         any_visible = False
         for sym, name in available:
-            if not q or q in sym.upper() or q in name.upper():
+            if not q or q == sym.upper() or q in name.upper():
                 row_frames[sym].pack(fill="x")
                 any_visible = True
             else:
