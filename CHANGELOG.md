@@ -23,6 +23,13 @@
   heading strings were causing all P/E columns to show as "P/E").
 - Scorecard table font size increased for readability.
 - Duplicate print statement removed from main ticker processing loop.
+- Ticker suggestion rows now match DB row height and alignment — same
+  checkbox, same font, same padding throughout.
+- Clicking a suggestion ticks it and moves it above the divider; clicking
+  again removes the row and re-fires Yahoo so it reappears in suggestions.
+- Search text no longer clears after selecting a suggestion, allowing
+  multiple picks in one pass.
+- Yahoo suggestions label updated to note the 7-result cap.
 
 ---
 
