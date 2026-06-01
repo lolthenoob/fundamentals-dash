@@ -1516,13 +1516,21 @@ def main():
     _run_state = {"selected": [], "years_back": 11, "force_refresh": False, "do_export": False}
 
     selected, YEARS_BACK, force_refresh, do_export, \
-        _root, _log, _title_var, _run_again_btn, _status_bottom = pick_tickers(DB_PATH, _run_state)
+        _root, _log, _title_var, _run_again_btn, _status_bottom, _exit_btn, _user_exited = pick_tickers(DB_PATH, _run_state)
 
     if not selected:
         print("No tickers selected. Exiting.")
         sys.exit(0)
 
     while True:
+        # If the window was destroyed (user clicked Exit), stop cleanly.
+        if _root is not None:
+            try:
+                if not _root.winfo_exists():
+                    return
+            except Exception:
+                return
+
         # Re-bind log to the current window widgets each iteration
         _cur_log, _cur_title = _log, _title_var
 
@@ -1655,15 +1663,33 @@ def main():
             log(f"  \u2714 {len(saved)} files \u2192 {session_folder}")
 
         log("\n\u2714 All done \u2014 close charts when finished.", title="Charts ready")
-        _run_again_btn.pack(side="left")
+        try:
+            if _run_again_btn is not None and _run_again_btn.winfo_exists():
+                _run_again_btn.pack(side="left")
+            if _exit_btn is not None and _exit_btn.winfo_exists():
+                _exit_btn.pack(side="right")
+        except Exception:
+            pass
+
+        # Don't show charts if the user already exited
+        if _root is not None:
+            try:
+                if not _root.winfo_exists():
+                    return
+            except Exception:
+                return
 
         plt.show()
 
         # Charts closed — wait for Run Again or window close.
         # _run_again() will update _run_state and call root.quit().
         # _go() will also call root.quit() after updating _run_state.
-        _title_var.set("Done \u2014 run again?")
-        _root.mainloop()
+        try:
+            if _root is not None and _root.winfo_exists():
+                _title_var.set("Done \u2014 run again?")
+                _root.mainloop()
+        except Exception:
+            pass
 
         # Read whatever _run_again / _go put into the shared state dict
         if not _run_state["selected"]:

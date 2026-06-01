@@ -86,7 +86,8 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
             pass
 
     if not available:
-        return _manual_entry_fallback()
+        tickers, years, refresh, export = _manual_entry_fallback()
+        return tickers, years, refresh, export, None, None, None, None, None, None, False
 
     # ── Result holders ────────────────────────────────────────────────────
     result_tickers: list[str] = []
@@ -841,6 +842,7 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         result_tickers = []
         _saved_geo = root.geometry()
         run_again_btn.pack_forget()
+        exit_btn.pack_forget()
         status_panel.pack_forget()
         for v in check_vars.values():
             v.set(False)
@@ -866,6 +868,22 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         # which also exits — main() reads _run_state for the new selection.
         # root.mainloop()
 
+    user_exited = False
+
+    def _do_exit():
+        nonlocal user_exited
+        user_exited = True
+        root.destroy()
+
+    exit_btn = tk.Button(
+        status_bottom,
+        text="✕  Exit",
+        bg="#CC3333", fg="white",
+        font=bold, relief="flat", padx=16, pady=8,
+        cursor="hand2",
+        command=_do_exit,
+    )
+
     run_again_btn.config(command=_run_again)
     root.bind("<Return>", lambda e: _go())
 
@@ -874,18 +892,23 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
     root.mainloop()
-    return result_tickers, result_years, result_refresh, result_export, root, log_text, status_title_var, run_again_btn, status_bottom
+    return result_tickers, result_years, result_refresh, result_export, root, log_text, status_title_var, run_again_btn, status_bottom, exit_btn, user_exited
 
 def post_status(log_text, status_title_var, message, title=None):
     """
     Append a line to the status window log and optionally update the subtitle.
-    Safe to call from the main thread.
+    Safe to call from the main thread. Silently no-ops if the window has been destroyed.
     """
-    if title:
-        status_title_var.set(title)
-    log_text.insert("end", message + "\n")
-    log_text.see("end")
-    log_text.update_idletasks()
+    try:
+        if log_text is None or not log_text.winfo_exists():
+            return
+        if title:
+            status_title_var.set(title)
+        log_text.insert("end", message + "\n")
+        log_text.see("end")
+        log_text.update_idletasks()
+    except Exception:
+        pass
 
 
 # ── Manual entry fallback (no DB) ─────────────────────────────────────────────
