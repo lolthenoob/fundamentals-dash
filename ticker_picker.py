@@ -186,6 +186,20 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
                             font=bold, relief="flat", padx=12, pady=4,
                             cursor="hand2")
 
+    # "Select All Results" button — shown only when search is active (DB rows only)
+    def _select_visible_db():
+        for sym, _ in available:
+            if sym in row_frames and row_frames[sym].winfo_ismapped():
+                check_vars[sym].set(True)
+        _sync_all_buttons()
+
+    select_results_btn = tk.Button(
+        search_frame, text="✔  Select All Results",
+        bg="#10B981", fg="white",
+        font=bold, relief="flat", padx=12, pady=4,
+        cursor="hand2", command=_select_visible_db,
+    )
+
     search_entry.focus_set()
 
     # ── Scrollable main list ──────────────────────────────────────────────
@@ -619,6 +633,7 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         if "," in q:
             _clear_suggestions()
             add_new_btn.pack_forget()
+            select_results_btn.pack_forget()
             symbols = _parse_bulk(q)
             if symbols:
                 if _bulk_resolve_id[0]:
@@ -637,6 +652,7 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         _clear_suggestions()
         if len(q) < 1:
             add_new_btn.pack_forget()
+            select_results_btn.pack_forget()
             return
 
         _ac_after = root.after(350, lambda: threading.Thread(
@@ -649,6 +665,9 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
             add_new_btn.pack(side="left", padx=(8, 0))
         else:
             add_new_btn.pack_forget()
+
+        # Show Select All Results whenever there's an active search
+        select_results_btn.pack(side="left", padx=(8, 0))
 
     search_var.trace_add("write", _on_search_change)
 
