@@ -1,5 +1,31 @@
 # Changelog — Fundamentals Dashboard
 
+## [0.1.3] - 2026-06-01
+
+### Added
+- **Bulk ticker entry** — type comma-separated symbols (e.g. `aapl,msft,xle`)
+  in the search box to add multiple tickers at once. Each row is individually
+  toggleable before committing with Add All.
+- **Persistent status window** — after clicking Go, the picker transitions to
+  a live progress log showing each download and processing step. The window
+  stays open after charts close.
+- **Run Again button** — returns to the ticker picker from the status window
+  without restarting the app.
+- **Exit button** — closes the app cleanly from the status window, sitting at
+  the opposite end of the bar from Run Again.
+
+### Fixed
+- ETF yield now calculated from full prior-year distributions instead of the
+  single latest payment.
+- ETFs no longer re-download when a valid cached version exists.
+- Run Again no longer freezes on the second selection.
+- Staleness check now uses `years_stored` and `history_exhausted` so tickers
+  with naturally short histories are not re-downloaded on every run.
+- Status log text is selectable for copy/paste.
+- ETF names shortened for cleaner display.
+- Unified suggestion row UX — session-added tickers follow the same
+  tick/untick flow as DB tickers.
+
 ## [0.1.2] - 2026-05-31
 
 ### Added
