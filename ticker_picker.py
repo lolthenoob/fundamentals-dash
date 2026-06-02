@@ -476,6 +476,9 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         _show_bulk_loading(symbols)
         _resolve_bulk(symbols)
 
+    _ac_buttons:    dict[str, tk.Button] = {}   # sym → live suggestion button
+    _ac_row_frames: dict[str, tk.Frame]  = {}   # sym → suggestion row frame
+
     # ── Single-ticker add (unchanged logic, factored to shared fn) ────────
     def _make_session_toggle(sym, var, btn):
         def _toggle():
@@ -505,6 +508,20 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
             check_vars[sym].set(True)
             if sym in tick_buttons:
                 tick_buttons[sym].config(text="☑", fg=CLR_ACCENT)
+            # Sync and retire the suggestion row for this sym
+            if sym in _ac_buttons:
+                try:
+                    _ac_buttons[sym].config(text="☑", fg=CLR_ACCENT,
+                                            command=lambda: None)
+                except Exception:
+                    pass
+            if sym in _ac_row_frames:
+                try:
+                    _ac_row_frames[sym].destroy()
+                    _ac_row_frames.pop(sym, None)
+                    _ac_buttons.pop(sym, None)
+                except Exception:
+                    pass
             return
 
         # New ticker — add a row
@@ -535,6 +552,23 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         var.trace_add("write", _update_summary)
         var.trace_add("write", _update_count)
         var.trace_add("write", _apply_filter)
+        _update_summary()
+        _update_count()
+
+        # Sync and retire the suggestion row for this sym (session row is now the source of truth)
+        if sym in _ac_buttons:
+            try:
+                _ac_buttons[sym].config(text="☑", fg=CLR_ACCENT,
+                                        command=lambda: None)  # one-shot
+            except Exception:
+                pass
+        if sym in _ac_row_frames:
+            try:
+                _ac_row_frames[sym].destroy()
+                _ac_row_frames.pop(sym, None)
+                _ac_buttons.pop(sym, None)
+            except Exception:
+                pass
 
     # ── Yahoo autocomplete (single-ticker mode) ───────────────────────────
     _ac_after        = None
@@ -542,12 +576,27 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
     _ac_last_results = []
 
     def _clear_suggestions():
+        # Unregister any suggestion rows that were registered as session tickers
+        for sym in list(_ac_row_frames.keys()):
+            if sym in _session_added:
+                # Only remove if not deliberately kept (i.e. var is still False / unticked)
+                var = check_vars.get(sym)
+                if var is None or not var.get():
+                    check_vars.pop(sym, None)
+                    row_frames.pop(sym, None)
+                    tick_buttons.pop(sym, None)
+                    _session_added.discard(sym)
+                    _bulk_name_cache.pop(sym, None)
         for w in _ac_rows:
             try:
                 w.destroy()
             except Exception:
                 pass
         _ac_rows.clear()
+        _ac_buttons.clear()
+        _ac_row_frames.clear()
+        _update_summary()
+        _update_count()
 
     def _yahoo_search(q):
         try:
@@ -562,8 +611,7 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
             quotes = data.get("quotes", [])
             results = [
                 (r.get("symbol", ""),
-                 r.get("longname") or r.get("shortname") or "",
-                 r.get("symbol") in check_vars)
+                 r.get("longname") or r.get("shortname") or "")
                 for r in quotes if r.get("symbol")
             ]
         except Exception:
@@ -574,51 +622,63 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
         nonlocal _ac_last_results
         _ac_last_results = results
         _clear_suggestions()
-        if not results:
+
+        db_syms = {sym for sym, _ in available}
+
+        # Only show symbols that are not in the DB and not already session-added
+        yahoo_only = [
+            (sym, name) for sym, name in results
+            if sym not in db_syms and sym not in check_vars
+        ]
+
+        if not yahoo_only:
             return
+
         div = tk.Frame(inner, bg="#CCCCCC", height=1)
-        div.pack(fill="x", pady=(6, 0))
+        div.pack(fill="x")
         _ac_rows.append(div)
         lbl = tk.Label(inner, text="  Yahoo suggestions (max 7)",
                        bg=CLR_BG, fg=CLR_SUBTEXT, font=bold, anchor="w")
         lbl.pack(fill="x")
         _ac_rows.append(lbl)
 
-        for i, (sym, name, in_db) in enumerate(results):
+        for i, (sym, name) in enumerate(yahoo_only):
             bg = CLR_ROW_A if i % 2 == 0 else CLR_ROW_B
             row = tk.Frame(inner, bg=bg, pady=ROW_PADY, padx=ROW_PADX)
             row.pack(fill="x")
             _ac_rows.append(row)
 
-            if in_db:
-                existing_var = check_vars.get(sym)
-                is_checked = existing_var.get() if existing_var else False
-                btn = tk.Button(row, text="☑" if is_checked else "☐",
-                                font=tick_font,
-                                fg=CLR_ACCENT if is_checked else "#AAAAAA",
-                                bg=bg, activebackground=bg,
-                                relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
-                btn.pack(side="left")
-                def _make_db_toggle(s):
-                    def _toggle():
-                        _add_ticker_sym(s)
-                    return _toggle
-                btn.config(command=_make_db_toggle(sym))
-                tk.Label(row, text=f"{sym:<8}", font=bold,
-                         bg=bg, fg=CLR_ACCENT, anchor="w").pack(side="left")
-            else:
-                btn = tk.Button(row, text="☐", font=tick_font,
-                                fg="#AAAAAA", bg=bg, activebackground=bg,
-                                relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
-                btn.pack(side="left")
-                def _make_new_toggle(s, n):
-                    def _toggle():
-                        _add_ticker_sym(s, n)
-                    return _toggle
-                btn.config(command=_make_new_toggle(sym, name))
-                tk.Label(row, text=f"{sym:<8}", font=bold,
-                         bg=bg, fg="#E06C00", anchor="w").pack(side="left")
+            # Register this suggestion row as a first-class session ticker so
+            # ticking it never needs to spawn a new row elsewhere.
+            var = tk.BooleanVar(value=False)
+            check_vars[sym]  = var
+            row_frames[sym]  = row
+            _session_added.add(sym)
+            _bulk_name_cache[sym] = name
 
+            var.trace_add("write", _update_summary)
+            var.trace_add("write", _update_count)
+            var.trace_add("write", _apply_filter)
+
+            btn = tk.Button(row, text="☐", font=tick_font,
+                            fg="#AAAAAA", bg=bg, activebackground=bg,
+                            relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+            btn.pack(side="left")
+            tick_buttons[sym]   = btn
+            _ac_buttons[sym]    = btn
+            _ac_row_frames[sym] = row
+
+            def _make_suggestion_toggle(s, v, b):
+                def _toggle():
+                    new_val = not v.get()
+                    v.set(new_val)
+                    b.config(text="☑" if new_val else "☐",
+                             fg=CLR_ACCENT if new_val else "#AAAAAA")
+                return _toggle
+
+            btn.config(command=_make_suggestion_toggle(sym, var, btn))
+            tk.Label(row, text=f"{sym:<8}", font=bold,
+                     bg=bg, fg="#E06C00", anchor="w").pack(side="left")
             tk.Label(row, text=name, font=mono,
                      bg=bg, fg=CLR_SUBTEXT, anchor="w").pack(side="left", fill="x")
 
