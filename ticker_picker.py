@@ -71,7 +71,7 @@ def _parse_bulk(raw: str) -> list[str]:
     return result
 
 
-def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int, bool, bool]:
+def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> tuple[list[str], int, bool, bool]:
     available: list[tuple[str, str]] = []
 
     if os.path.exists(db_path):
@@ -120,6 +120,28 @@ def pick_tickers(db_path: str, _run_state: dict = None) -> tuple[list[str], int,
     hdr_sub   = tkfont.Font(family="Consolas", size=HDR_SUB_FONT_SIZE)
     sel_font  = tkfont.Font(family="Consolas", size=SEL_FONT_SIZE, weight="bold")
     tick_font = tkfont.Font(family="Segoe UI Symbol", size=TICK_FONT_SIZE)
+
+    # ── Menubar ───────────────────────────────────────────────────────────
+    menu_font = tkfont.Font(family="Consolas", size=BOLD_FONT_SIZE, weight="bold")
+    menubar = tk.Menu(root, font=menu_font)
+
+    file_menu = tk.Menu(menubar, tearoff=0, font=menu_font)
+    file_menu.add_command(label="Exit", command=lambda: root.destroy())
+    menubar.add_cascade(label="File", menu=file_menu)
+
+    edit_menu  = tk.Menu(menubar, tearoff=0, font=menu_font)
+    prefs_menu = tk.Menu(edit_menu, tearoff=0, font=menu_font)
+    if prefs_callback:
+        prefs_menu.add_command(
+            label="Chart Preferences…",
+            command=lambda: prefs_callback(root),
+        )
+    else:
+        prefs_menu.add_command(label="Chart Preferences…", state="disabled")
+    edit_menu.add_cascade(label="Preferences", menu=prefs_menu)
+    menubar.add_cascade(label="Edit", menu=edit_menu)
+
+    root.config(menu=menubar)
 
     # ── Header ────────────────────────────────────────────────────────────
     hdr = tk.Frame(root, bg=CLR_ACCENT, pady=12)

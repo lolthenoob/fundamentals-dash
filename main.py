@@ -19,6 +19,7 @@ from interactive_table import show_stock_table, show_etf_table
 import warnings
 warnings.filterwarnings("ignore")
 
+import configparser
 import csv
 import dateutil.parser
 
@@ -56,6 +57,63 @@ DB_DIR    = os.path.join(_BASE, "tickers")
 DB_OUTPUT = os.path.join(_BASE, "output")
 DB_PATH = os.path.join(DB_DIR, "fundamentals.db")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 0b. CHART PREFERENCES  (tickers/chart_prefs.ini)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PREFS_PATH = os.path.join(DB_DIR, "chart_prefs.ini")
+
+# Valid chart style choices per series
+PANEL_STYLES = {
+    "panel1_price":       ("line",),
+    "panel2_pe":          ("bar", "line"),
+    "panel2_peg":         ("bar", "line"),
+    "panel3_eps":         ("bar", "line"),
+    "panel3_roe":         ("bar", "line"),
+    "panel4_bvps":        ("bar", "line"),
+    "panel4_debt":        ("bar", "line"),
+    "panel5_ocf":         ("bar", "line"),
+    "panel5_fcf":         ("bar", "line"),
+    "panel6_rev":         ("bar", "line"),
+    "panel6_div":         ("bar", "line"),
+}
+
+PANEL_DEFAULTS = {
+    "panel1_price":   "line",
+    "panel2_pe":      "bar",
+    "panel2_peg":     "line",
+    "panel3_eps":     "bar",
+    "panel3_roe":     "line",
+    "panel4_bvps":    "bar",
+    "panel4_debt":    "line",
+    "panel5_ocf":     "bar",
+    "panel5_fcf":     "line",
+    "panel6_rev":     "bar",
+    "panel6_div":     "line",
+}
+
+def load_chart_prefs():
+    """Load chart style preferences from INI file, falling back to defaults."""
+    cfg = configparser.ConfigParser()
+    prefs = dict(PANEL_DEFAULTS)
+    if os.path.exists(PREFS_PATH):
+        cfg.read(PREFS_PATH)
+        if "chart_styles" in cfg:
+            for key, valid in PANEL_STYLES.items():
+                val = cfg["chart_styles"].get(key, prefs[key]).strip().lower()
+                if val in valid:
+                    prefs[key] = val
+    return prefs
+
+def save_chart_prefs(prefs):
+    """Write chart style preferences back to the INI file."""
+    os.makedirs(DB_DIR, exist_ok=True)
+    cfg = configparser.ConfigParser()
+    cfg["chart_styles"] = prefs
+    with open(PREFS_PATH, "w") as f:
+        cfg.write(f)
+
+
 def get_db():
     """Return a connection to the SQLite database, creating it if needed."""
     os.makedirs(DB_DIR, exist_ok=True)
@@ -78,6 +136,7 @@ def _create_tables(conn):
             consensus       TEXT,
             trailing_pe     REAL,
             forward_pe      REAL,
+            peg_ratio       REAL,
             last_updated    TEXT
         );
 
@@ -111,8 +170,8 @@ def _create_tables(conn):
 
     conn.commit()
 
-    # Migrate existing DBs that predate trailing_pe / forward_pe
-    for col in ("trailing_pe", "forward_pe"):
+    # Migrate existing DBs that predate trailing_pe / forward_pe / peg_ratio
+    for col in ("trailing_pe", "forward_pe", "peg_ratio"):
         try:
             conn.execute(f"ALTER TABLE tickers ADD COLUMN {col} REAL")
             conn.commit()
@@ -136,9 +195,9 @@ def upsert_ticker(conn, d, years_requested):
     conn.execute("""
         INSERT INTO tickers
             (symbol, name, current_price, analyst_tp, analyst_low, analyst_high,
-             consensus, trailing_pe, forward_pe, last_updated,
+             consensus, trailing_pe, forward_pe, peg_ratio, last_updated,
              years_stored, history_exhausted)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(symbol) DO UPDATE SET
             name              = excluded.name,
             current_price     = excluded.current_price,
@@ -148,13 +207,15 @@ def upsert_ticker(conn, d, years_requested):
             consensus         = excluded.consensus,
             trailing_pe       = excluded.trailing_pe,
             forward_pe        = excluded.forward_pe,
+            peg_ratio         = excluded.peg_ratio,
             last_updated      = excluded.last_updated,
             years_stored      = excluded.years_stored,
             history_exhausted = excluded.history_exhausted
     """, (
         d["symbol"], d["name"], d["current_price"],
         d["analyst_tp"], d["analyst_low"], d["analyst_high"],
-        d["consensus"], d["trailing_pe"], d["forward_pe"], now,
+        d["consensus"], d["trailing_pe"], d["forward_pe"],
+        d.get("peg_ratio"), now,
         years_stored, history_exhausted,
     ))
 
@@ -222,7 +283,8 @@ def load_ticker_from_db(conn, symbol):
         "analyst_high":  row["analyst_high"],
         "consensus":     row["consensus"],
         "trailing_pe":   row["trailing_pe"],
-        "forward_pe":    row["forward_pe"]
+        "forward_pe":    row["forward_pe"],
+        "peg_ratio":     row["peg_ratio"],
     }
 
 def upsert_etf(conn, d, years_requested):
@@ -583,6 +645,12 @@ def download_ticker(symbol, years_back):
         consensus     = info.get("recommendationKey", "").replace("_", " ").title()
         trailing_pe   = info.get("trailingPE")
         forward_pe    = info.get("forwardPE")
+        peg_ratio     = info.get("pegRatio")       # current PEG from yfinance
+        short_float   = (
+            info.get("shortPercentOfFloat") or
+            info.get("sharesPercentSharesOut") or
+            info.get("shortPercent")
+        )
 
         print("OK")
         return {
@@ -606,6 +674,8 @@ def download_ticker(symbol, years_back):
             "consensus":     consensus,
             "trailing_pe":   trailing_pe,
             "forward_pe":    forward_pe,
+            "peg_ratio":     peg_ratio,
+            "short_float":   short_float,
         }
 
     except Exception as e:
@@ -680,6 +750,35 @@ def latest(arr):
 def year_labels(years):
     return [str(y) for y in years]
 
+def compute_historical_peg(pe_list, eps_list):
+    """
+    For each year, PEG = P/E ÷ year-on-year EPS growth (%).
+    Looks back past None/zero years to find the last valid prior EPS,
+    so a single missing year doesn't poison all subsequent data points.
+    Returns None where growth is below 5% (PEG not meaningful at near-zero
+    growth) or negative, or where no valid prior EPS exists.
+    """
+    result = []
+    for i, (pe, eps) in enumerate(zip(pe_list, eps_list)):
+        if i == 0 or pe is None or eps is None or eps <= 0:
+            result.append(None)
+            continue
+        # Walk back to find the nearest valid prior EPS
+        prev_eps = None
+        for j in range(i - 1, -1, -1):
+            if eps_list[j] is not None and eps_list[j] > 0:
+                prev_eps = eps_list[j]
+                break
+        if prev_eps is None:
+            result.append(None)
+            continue
+        growth_pct = ((eps / prev_eps) - 1) * 100
+        if growth_pct <= 5:
+            result.append(None)
+            continue
+        result.append(round(pe / growth_pct, 4))
+    return result
+
 def add_zero_line(ax):
     ax.axhline(0, color="#ccc", linewidth=0.8, zorder=0)
 
@@ -748,22 +847,37 @@ def ticker_legend(ax, data_list, colors):
 # 5. INDIVIDUAL-TICKER CHARTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_single_ticker(d, color):
+def _draw_series(ax, yrs, x, vals, style, color, alpha=0.50, label="", marker="o", linewidth=2):
+    """Draw bars or line depending on style string ('bar' or 'line')."""
+    if style == "bar":
+        ax.bar(yrs, clean(vals), color=color, alpha=alpha,
+               linewidth=0, edgecolor="none", label=label)
+    else:
+        ax.plot(yrs, clean(vals), color=color, linewidth=linewidth,
+                marker=marker, markersize=4, label=label)
+
+
+def plot_single_ticker(d, color, prefs=None):
+    if prefs is None:
+        prefs = load_chart_prefs()
+
     apply_style()
+    year_range = f"{d['years'][0]}–{d['years'][-1]}" if d.get("years") else ""
     fig = plt.figure(figsize=(16, 10), facecolor="white")
-    fig.suptitle(f"{d['symbol']} — {d['name']}  |  Fundamentals 2015–2025",
+    fig.suptitle(f"{d['symbol']} — {d['name']}  |  Fundamentals {year_range}",
                  fontsize=14, fontweight="bold", y=0.98)
 
-    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.38)
-    yrs  = year_labels(d["years"])
-    x    = np.arange(len(yrs))
+    gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.38)
+    yrs = year_labels(d["years"])
+    x   = np.arange(len(yrs))
 
+    # ── Panel 1: Share Price (always line) ────────────────────────────────────
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.plot(yrs, clean(d["prices"]), color=color, linewidth=2, marker="o", markersize=4)
-    if d["current_price"]:
+    if d.get("current_price"):
         ax1.axhline(d["current_price"], color=color, linestyle="--", linewidth=1,
                     label=f"Current ${d['current_price']:,.2f}")
-    if d["analyst_tp"]:
+    if d.get("analyst_tp"):
         ax1.axhline(d["analyst_tp"], color="#888", linestyle=":", linewidth=1,
                     label=f"TP ${d['analyst_tp']:,.2f}")
     ax1.set_title("Share Price ($)", fontsize=10, fontweight="bold")
@@ -771,84 +885,159 @@ def plot_single_ticker(d, color):
     ax1.legend(fontsize=7)
     add_zero_line(ax1)
 
+    # ── Panel 2: P/E & PEG ───────────────────────────────────────────────────
+    # Left axis: historical P/E (bar or line per pref)
+    # Right axis: historical PEG (always line, orange)
+    # Dotted lines: current forward P/E (gold) and current PEG (coral)
+    hist_peg = compute_historical_peg(d["pe"], d["eps"])
+    s2_pe  = prefs.get("panel2_pe",  "bar")
+    s2_peg = prefs.get("panel2_peg", "line")
+
     ax2 = fig.add_subplot(gs[0, 1])
     ax2.set_axisbelow(True)
     ax2b = ax2.twinx()
     ax2b.set_axisbelow(True)
     ax2b.grid(False)
-    ax2.bar(yrs, clean(d["eps"]), color=color, alpha=0.50, linewidth=0, edgecolor="none", label="EPS ($)")
-    ax2b.plot(yrs, clean(d["pe"]), color="#F59E0B", linewidth=2, marker="s", markersize=6, label="P/E")
-    ax2.set_title("EPS ($) & P/E Ratio", fontsize=10, fontweight="bold")
+
+    _draw_series(ax2, yrs, x, d["pe"], s2_pe, color, alpha=0.50, label="P/E")
+    _draw_series(ax2b, yrs, x, hist_peg, s2_peg, "#F59E0B", alpha=0.60, label="PEG", marker="s")
+
+    fwd_pe  = d.get("forward_pe")
+    cur_peg = d.get("peg_ratio")
+    legend_lines = [
+        Line2D([0],[0], color=color, linewidth=6 if s2_pe=="bar" else 2,
+               alpha=0.75 if s2_pe=="bar" else 1.0, label="P/E"),
+        Line2D([0],[0], color="#F59E0B", linewidth=6 if s2_peg=="bar" else 2,
+               alpha=0.75 if s2_peg=="bar" else 1.0, label="PEG"),
+    ]
+    if fwd_pe:
+        ax2.axhline(fwd_pe, color="#B45309", linestyle="--", linewidth=1.2,
+                    label=f"Fwd P/E {fwd_pe:.1f}x")
+        legend_lines.append(Line2D([0],[0], color="#B45309", linestyle="--",
+                                   linewidth=1.2, label=f"Fwd P/E {fwd_pe:.1f}x"))
+    if cur_peg:
+        ax2b.axhline(cur_peg, color="#EF4444", linestyle=":", linewidth=1.4,
+                     label=f"Cur PEG {cur_peg:.2f}")
+        legend_lines.append(Line2D([0],[0], color="#EF4444", linestyle=":",
+                                   linewidth=1.4, label=f"Cur PEG {cur_peg:.2f}"))
+
+    ax2b.axhline(0, color="#ccc", linewidth=0.8, zorder=0)
+    ax2.set_title("P/E Ratio & PEG", fontsize=10, fontweight="bold")
     ax2.set_xticks(x[::2]); ax2.set_xticklabels(yrs[::2], fontsize=8)
     ax2.tick_params(axis="y", labelsize=8)
     ax2b.tick_params(axis="y", labelsize=8, colors="#F59E0B")
-    ax2b.set_ylabel("P/E", fontsize=8, color="#F59E0B")
-    lines = [Line2D([0],[0], color=color, linewidth=6, alpha=0.75, label="EPS ($)"),
-             Line2D([0],[0], color="#F59E0B", linewidth=2, label="P/E")]
-    ax2.legend(handles=lines, fontsize=7)
+    ax2b.set_ylabel("PEG", fontsize=8, color="#F59E0B")
+    ax2.legend(handles=legend_lines, fontsize=7)
     add_zero_line(ax2)
+
+    # ── Panel 3: EPS & ROE ───────────────────────────────────────────────────
+    # Left axis: EPS (bar or line per pref)
+    # Right axis: ROE % (always line, red)
+    s3_eps = prefs.get("panel3_eps", "bar")
+    s3_roe = prefs.get("panel3_roe", "line")
 
     ax3 = fig.add_subplot(gs[0, 2])
     ax3.set_axisbelow(True)
     ax3b = ax3.twinx()
     ax3b.set_axisbelow(True)
     ax3b.grid(False)
-    ax3.bar(yrs, clean(d["bvps"]), color=color, alpha=0.50, linewidth=0, edgecolor="none", label="BV/Share ($)")
-    ax3b.plot(yrs, clean(d["roe"]), color="#EF4444", linewidth=2, marker="s", markersize=6, label="ROE (%)")
-    ax3.set_title("Book Value/Share & ROE (%)", fontsize=10, fontweight="bold")
+
+    _draw_series(ax3, yrs, x, d["eps"], s3_eps, color, alpha=0.50, label="EPS ($)")
+    _draw_series(ax3b, yrs, x, d["roe"], s3_roe, "#EF4444", alpha=0.60, label="ROE (%)", marker="s")
+
+    ax3.set_title("EPS ($) & ROE (%)", fontsize=10, fontweight="bold")
     ax3.set_xticks(x[::2]); ax3.set_xticklabels(yrs[::2], fontsize=8)
     ax3.tick_params(axis="y", labelsize=8)
     ax3b.tick_params(axis="y", labelsize=8, colors="#EF4444")
     ax3b.set_ylabel("ROE %", fontsize=8, color="#EF4444")
-    lines = [Line2D([0],[0], color=color, linewidth=6, alpha=0.75, label="BV/Sh ($)"),
-             Line2D([0],[0], color="#EF4444", linewidth=2, label="ROE (%)")]
-    ax3.legend(handles=lines, fontsize=7)
+    lines3 = [
+        Line2D([0],[0], color=color, linewidth=6 if s3_eps=="bar" else 2,
+               alpha=0.75 if s3_eps=="bar" else 1.0, label="EPS ($)"),
+        Line2D([0],[0], color="#EF4444", linewidth=6 if s3_roe=="bar" else 2,
+               alpha=0.75 if s3_roe=="bar" else 1.0, label="ROE (%)"),
+    ]
+    ax3.legend(handles=lines3, fontsize=7)
     add_zero_line(ax3)
+
+    # ── Panel 4: Book Value/Share & Debt/Assets ───────────────────────────────
+    # Left axis: BV/Share (bar or line per pref)
+    # Right axis: Debt/Assets % (always line, teal)
+    s4_bvps = prefs.get("panel4_bvps", "bar")
+    s4_debt = prefs.get("panel4_debt", "line")
+    da_pct = [v * 100 if v is not None else None for v in d["debt_assets"]]
 
     ax4 = fig.add_subplot(gs[1, 0])
     ax4.set_axisbelow(True)
-    ax4.bar(yrs, clean(d["ocfps"]), color=color, alpha=0.50, linewidth=0, edgecolor="none", label="OCF/Sh ($)")
-    ax4.plot(yrs, clean(d["fcfps"]), color="#10B981", linewidth=2.5,
-             marker="o", markersize=6, label="FCF/Sh ($)")
-    ax4.set_title("OCF/Share & FCF/Share ($)", fontsize=10, fontweight="bold")
+    ax4b = ax4.twinx()
+    ax4b.set_axisbelow(True)
+    ax4b.grid(False)
+
+    _draw_series(ax4, yrs, x, d["bvps"], s4_bvps, color, alpha=0.50, label="BV/Sh ($)")
+    _draw_series(ax4b, yrs, x, da_pct, s4_debt, "#06B6D4", alpha=0.60, label="Debt/Assets (%)")
+
+    ax4.set_title("Book Value/Share & Debt/Assets", fontsize=10, fontweight="bold")
     ax4.set_xticks(x[::2]); ax4.set_xticklabels(yrs[::2], fontsize=8)
     ax4.tick_params(axis="y", labelsize=8)
-    ax4.legend(fontsize=7)
+    ax4b.tick_params(axis="y", labelsize=8, colors="#06B6D4")
+    ax4b.set_ylabel("Debt/Assets %", fontsize=8, color="#06B6D4")
+    lines4 = [
+        Line2D([0],[0], color=color, linewidth=6 if s4_bvps=="bar" else 2,
+               alpha=0.75 if s4_bvps=="bar" else 1.0, label="BV/Sh ($)"),
+        Line2D([0],[0], color="#06B6D4", linewidth=6 if s4_debt=="bar" else 2,
+               alpha=0.75 if s4_debt=="bar" else 1.0, label="Debt/Assets (%)"),
+    ]
+    ax4.legend(handles=lines4, fontsize=7)
     add_zero_line(ax4)
+
+    # ── Panel 5: OCF/Share & FCF/Share ───────────────────────────────────────
+    s5_ocf = prefs.get("panel5_ocf", "bar")
+    s5_fcf = prefs.get("panel5_fcf", "line")
 
     ax5 = fig.add_subplot(gs[1, 1])
     ax5.set_axisbelow(True)
-    ax5b = ax5.twinx()
-    ax5b.set_axisbelow(True)
-    ax5b.grid(False)
-    ax5.bar(yrs, clean(d["revps"]), color=color, alpha=0.50, linewidth=0, edgecolor="none", label="Rev/Sh ($)")
-    if any(v and v > 0 for v in d["divps"]):
-        ax5b.plot(yrs, clean(d["divps"]), color="#7C3AED", linewidth=2.5, marker="D", markersize=6, label="Div/Sh ($)")
-        ax5b.tick_params(axis="y", labelsize=8, colors="#8B5CF6")
-        ax5b.set_ylabel("Div/Sh ($)", fontsize=8, color="#8B5CF6")
-    ax5.set_title("Revenue/Share & Div/Share ($)", fontsize=10, fontweight="bold")
+    _draw_series(ax5, yrs, x, d["ocfps"], s5_ocf, color, alpha=0.50, label="OCF/Sh ($)")
+    _draw_series(ax5, yrs, x, d["fcfps"], s5_fcf, "#10B981", alpha=0.90, label="FCF/Sh ($)", marker="o", linewidth=2.5)
+    ax5.set_title("OCF/Share & FCF/Share ($)", fontsize=10, fontweight="bold")
     ax5.set_xticks(x[::2]); ax5.set_xticklabels(yrs[::2], fontsize=8)
     ax5.tick_params(axis="y", labelsize=8)
-    lines = [Line2D([0],[0], color=color, linewidth=6, alpha=0.75, label="Rev/Sh ($)"),
-             Line2D([0],[0], color="#8B5CF6", linewidth=2, label="Div/Sh ($)")]
-    ax5.legend(handles=lines, fontsize=7)
+    ax5.legend(fontsize=7)
     add_zero_line(ax5)
 
+    # ── Panel 6: Revenue/Share & Div/Share ───────────────────────────────────
+    s6_rev = prefs.get("panel6_rev", "bar")
+    s6_div = prefs.get("panel6_div", "line")
+
     ax6 = fig.add_subplot(gs[1, 2])
-    da_pct = [v * 100 if v is not None else None for v in d["debt_assets"]]
-    ax6.fill_between(yrs, clean(da_pct), alpha=0.35, color=color)
-    ax6.plot(yrs, clean(da_pct), color=color, linewidth=2, marker="o", markersize=4)
-    ax6.set_title("Debt / Assets (%)", fontsize=10, fontweight="bold")
+    ax6.set_axisbelow(True)
+    ax6b = ax6.twinx()
+    ax6b.set_axisbelow(True)
+    ax6b.grid(False)
+
+    _draw_series(ax6, yrs, x, d["revps"], s6_rev, color, alpha=0.50, label="Rev/Sh ($)")
+    if any(v and v > 0 for v in d["divps"]):
+        _draw_series(ax6b, yrs, x, d["divps"], s6_div, "#7C3AED", alpha=0.80, label="Div/Sh ($)", marker="D")
+        ax6b.tick_params(axis="y", labelsize=8, colors="#8B5CF6")
+        ax6b.set_ylabel("Div/Sh ($)", fontsize=8, color="#8B5CF6")
+    ax6.set_title("Revenue/Share & Div/Share ($)", fontsize=10, fontweight="bold")
     ax6.set_xticks(x[::2]); ax6.set_xticklabels(yrs[::2], fontsize=8)
     ax6.tick_params(axis="y", labelsize=8)
-    ax6.set_ylim(0, 105)
+    lines6 = [
+        Line2D([0],[0], color=color, linewidth=6 if s6_rev=="bar" else 2,
+               alpha=0.75 if s6_rev=="bar" else 1.0, label="Rev/Sh ($)"),
+        Line2D([0],[0], color="#8B5CF6", linewidth=6 if s6_div=="bar" else 2,
+               alpha=0.75 if s6_div=="bar" else 1.0, label="Div/Sh ($)"),
+    ]
+    ax6.legend(handles=lines6, fontsize=7)
+    add_zero_line(ax6)
 
+    # ── Footer ────────────────────────────────────────────────────────────────
     consensus_str = d.get("consensus", "")
     tp_str  = f"  TP ${d['analyst_tp']:,.2f}" if d.get("analyst_tp") else ""
     low_str = f"  Low ${d['analyst_low']:,.2f}" if d.get("analyst_low") else ""
     hi_str  = f"  High ${d['analyst_high']:,.2f}" if d.get("analyst_high") else ""
+    peg_str = f"  PEG {cur_peg:.2f}" if cur_peg else ""
     fig.text(0.5, 0.01,
-             f"Analyst Consensus: {consensus_str}{tp_str}{low_str}{hi_str}",
+             f"Analyst Consensus: {consensus_str}{tp_str}{low_str}{hi_str}{peg_str}",
              ha="center", fontsize=9, color="#555", fontfamily="monospace")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.97])
@@ -1506,6 +1695,149 @@ def make_session_folder(stock_list, etf_list):
 # 8. MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 7b. CHART PREFERENCES DIALOG
+# ─────────────────────────────────────────────────────────────────────────────
+
+PANEL_LABELS = {
+    "panel2_pe":      ("Chart 2 — P/E & PEG",         "P/E"),
+    "panel2_peg":     (None,                            "PEG"),
+    "panel3_eps":     ("Chart 3 — EPS & ROE",          "EPS"),
+    "panel3_roe":     (None,                            "ROE"),
+    "panel4_bvps":    ("Chart 4 — BV/Share & Debt/Assets", "BV/Share"),
+    "panel4_debt":    (None,                            "Debt/Assets"),
+    "panel5_ocf":     ("Chart 5 — OCF/Share & FCF/Share",  "OCF/Share"),
+    "panel5_fcf":     (None,                            "FCF/Share"),
+    "panel6_rev":     ("Chart 6 — Revenue/Share & Div/Share", "Rev/Share"),
+    "panel6_div":     (None,                            "Div/Share"),
+}
+
+def open_chart_prefs_dialog(parent):
+    """Open a Toplevel window for editing per-series chart style preferences."""
+    import tkinter as tk
+
+    prefs = load_chart_prefs()
+
+    dlg = tk.Toplevel(parent)
+    dlg.title("Chart Style Preferences")
+    dlg.configure(bg="#F7F9FC")
+    dlg.resizable(False, False)
+    dlg.grab_set()  # modal
+
+    FONT_HDR   = ("Segoe UI", 14, "bold")
+    FONT_PANEL = ("Segoe UI", 11, "bold")
+    FONT_ITEM  = ("Segoe UI", 11)
+    FONT_BTN   = ("Segoe UI", 11, "bold")
+    FONT_NOTE  = ("Segoe UI", 10)
+    BG         = "#F7F9FC"
+    ACCENT     = "#00A4EF"
+
+    # ── Header ──────────────────────────────────────────────────────────────
+    tk.Label(
+        dlg, text="Chart Style Preferences",
+        bg=ACCENT, fg="white",
+        font=FONT_HDR,
+        padx=24, pady=14,
+    ).pack(fill="x")
+
+    tk.Label(
+        dlg,
+        text="  Chart 1 (Share Price) is always a line.",
+        bg=BG, fg="#555577",
+        font=FONT_NOTE,
+        anchor="w",
+    ).pack(fill="x", padx=24, pady=(10, 2))
+
+    # ── Series rows ─────────────────────────────────────────────────────────
+    frame = tk.Frame(dlg, bg=BG, padx=24, pady=8)
+    frame.pack(fill="x")
+
+    # Column headers
+    tk.Label(frame, text="Series", bg=BG, fg="#888",
+             font=("Segoe UI", 10), anchor="w").grid(
+        row=0, column=0, sticky="w", padx=(0, 16))
+    for ci, lbl in enumerate(("Bar", "Line"), start=1):
+        tk.Label(frame, text=lbl, bg=BG, fg="#888",
+                 font=("Segoe UI", 10)).grid(row=0, column=ci, padx=10)
+
+    vars_ = {}
+    grid_row = 1
+
+    for key, (panel_title, series_label) in PANEL_LABELS.items():
+        # Panel group heading row
+        if panel_title is not None:
+            tk.Label(
+                frame, text=panel_title,
+                bg=BG, fg="#1A1A2E",
+                font=FONT_PANEL,
+                anchor="w",
+            ).grid(row=grid_row, column=0, columnspan=3, sticky="w",
+                   pady=(12, 2))
+            grid_row += 1
+
+        # Series label
+        tk.Label(
+            frame, text=f"  {series_label}",
+            bg=BG, fg="#1A1A2E",
+            font=FONT_ITEM,
+            anchor="w",
+        ).grid(row=grid_row, column=0, sticky="w", pady=3, padx=(0, 16))
+
+        var = tk.StringVar(value=prefs.get(key, "bar"))
+        vars_[key] = var
+
+        for ci, style in enumerate(("bar", "line"), start=1):
+            tk.Radiobutton(
+                frame,
+                variable=var,
+                value=style,
+                bg=BG,
+                selectcolor="#D0EEFF",
+                activebackground=BG,
+            ).grid(row=grid_row, column=ci, padx=10)
+
+        grid_row += 1
+
+    # ── Separator ───────────────────────────────────────────────────────────
+    tk.Frame(dlg, bg="#CCCCCC", height=1).pack(fill="x", padx=24, pady=(8, 0))
+
+    # ── Buttons ─────────────────────────────────────────────────────────────
+    btn_row = tk.Frame(dlg, bg=BG, padx=24, pady=14)
+    btn_row.pack(fill="x")
+
+    def _save():
+        updated = {k: v.get() for k, v in vars_.items()}
+        updated["panel1_price"] = "line"
+        save_chart_prefs(updated)
+        dlg.destroy()
+
+    def _cancel():
+        dlg.destroy()
+
+    tk.Button(
+        btn_row, text="✓  Save",
+        bg=ACCENT, fg="white",
+        font=FONT_BTN,
+        relief="flat", padx=20, pady=8, cursor="hand2",
+        command=_save,
+    ).pack(side="right")
+
+    tk.Button(
+        btn_row, text="Cancel",
+        bg="#E5E7EB", fg="#1A1A2E",
+        font=FONT_BTN,
+        relief="flat", padx=16, pady=8, cursor="hand2",
+        command=_cancel,
+    ).pack(side="right", padx=(0, 10))
+
+    # Centre over parent
+    dlg.update_idletasks()
+    px = parent.winfo_x() + (parent.winfo_width()  - dlg.winfo_width())  // 2
+    py = parent.winfo_y() + (parent.winfo_height() - dlg.winfo_height()) // 2
+    dlg.geometry(f"+{px}+{py}")
+    dlg.wait_window()
+
+
 def main():
     print(f"\n{'='*60}")
     print(f"  Fundamental Dashboard — starting up")
@@ -1516,7 +1848,9 @@ def main():
     _run_state = {"selected": [], "years_back": 11, "force_refresh": False, "do_export": False}
 
     selected, YEARS_BACK, force_refresh, do_export, \
-        _root, _log, _title_var, _run_again_btn, _status_bottom, _exit_btn, _user_exited = pick_tickers(DB_PATH, _run_state)
+        _root, _log, _title_var, _run_again_btn, _status_bottom, _exit_btn, _user_exited = pick_tickers(
+            DB_PATH, _run_state, prefs_callback=open_chart_prefs_dialog
+        )
 
     if not selected:
         print("No tickers selected. Exiting.")
@@ -1612,6 +1946,7 @@ def main():
         log(f"\nLoaded: {', '.join(all_loaded)}", title="Building charts\u2026")
 
         apply_style()
+        chart_prefs = load_chart_prefs()
         figs_stock_single = []
         fig_stock_table   = None
         fig_comparison    = None
@@ -1621,7 +1956,7 @@ def main():
 
         for d, col in zip(stock_list, stock_colors):
             log(f"  Chart: {d['symbol']}")
-            fig = plot_single_ticker(d, col)
+            fig = plot_single_ticker(d, col, prefs=chart_prefs)
             fig.canvas.manager.set_window_title(f"{d['symbol']} \u2014 {d['name']}")
             figs_stock_single.append(fig)
 
@@ -1738,4 +2073,4 @@ if __name__ == "__main__":
         print("  UNHANDLED ERROR")
         print("="*60)
         traceback.print_exc()
-        input("\nPress Enter to close...")
+        input("\nPress Enter to close...")  
