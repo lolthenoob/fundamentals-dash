@@ -29,25 +29,155 @@ CLR_TEXT    = "#1A1A2E"
 CLR_SUBTEXT = "#555577"
 CLR_BTN_FG  = "#FFFFFF"
 
-TICK_FONT_SIZE = 20
+TICK_FONT_SIZE = 14
 ROW_PADY       = 0
 ROW_PADX       = 8
 WINDOW_WIDTH   = 1400
-WINDOW_HEIGHT  = 1.25
+WINDOW_HEIGHT  = 0.2
 WINDOW_X       = 50
-WINDOW_Y       = 50
+WINDOW_Y       = 0
 YEARS_DEFAULT  = 11
 
-MONO_FONT_SIZE = 18
-BOLD_FONT_SIZE = 18
-HDR_BOLD_FONT_SIZE = 20
-HDR_SUB_FONT_SIZE = 20
-SEL_FONT_SIZE = 18
-
+MONO_FONT_SIZE = 12
+BOLD_FONT_SIZE = 12
+HDR_BOLD_FONT_SIZE = 14
+HDR_SUB_FONT_SIZE = 14
+SEL_FONT_SIZE = 12
 
 # Maximum symbol length — anything longer is likely a paste artefact
 _SYM_MAX_LEN = 6
 _SYM_RE      = re.compile(r'^[A-Z0-9.\-]{1,6}$')
+
+
+# ── Watchlist persistence ─────────────────────────────────────────────────────
+
+class WatchlistManager:
+    """
+    Loads and saves named ticker groups to tickers/watchlists.json.
+
+    File format:
+        {
+            "Semiconductors": ["NVDA", "AMD", "QCOM", "AVGO", "TXN"],
+            "Dividend growers": ["MSFT", "AAPL", "JNJ", "PG"],
+            "__order__": ["Dividend growers", "Semiconductors", ...]
+        }
+
+    Keys are display names; values are lists of uppercase ticker symbols.
+    "__order__" is a reserved key storing the user-defined display order.
+    The bar always shows the first 3 entries from __order__.
+    The file is written atomically (temp file + rename) so a crash during
+    save can't corrupt existing data.
+    """
+
+    DEFAULT_WATCHLISTS = {
+        "Semiconductors": ["NVDA", "AMD", "QCOM", "AVGO", "TXN"],
+        "Big Tech": ["MSFT", "AAPL", "GOOGL", "META", "AMZN"],
+        "Dividend growers": ["MSFT", "AAPL", "JNJ", "PG", "KO"],
+        "ETF sampler": ["SPY", "QQQ", "VTI", "SCHD", "VYM"],
+    }
+    _INTERNAL = {"__order__", "__pinned__"}   # keys never shown as watchlist names
+
+    def __init__(self, db_path: str):
+        self._path = os.path.join(os.path.dirname(db_path), "watchlists.json")
+        self._data: dict[str, list[str]] = {}
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self._path):
+            try:
+                with open(self._path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    self._data = {}
+                    for k, v in raw.items():
+                        if not isinstance(v, list):
+                            continue
+                        if k in self._INTERNAL:
+                            # Internal keys store names/strings verbatim — no uppercasing
+                            self._data[k] = [str(s) for s in v if isinstance(s, str)]
+                        else:
+                            # Watchlist entries store ticker symbols — uppercase those
+                            self._data[k] = [str(s).upper() for s in v if isinstance(s, str)]
+                    self._repair_order()
+                    return
+            except Exception:
+                pass
+        # First run — seed with defaults and save
+        self._data = dict(self.DEFAULT_WATCHLISTS)
+        self._repair_order()
+        self._save()
+
+    def _repair_order(self):
+        """Ensure __order__ exists and contains exactly the current watchlist names."""
+        existing = [n for n in self._data.get("__order__", [])
+                    if n in self._data and n not in self._INTERNAL]
+        all_names = [k for k in self._data if k not in self._INTERNAL]
+        # Append any names missing from the stored order
+        for n in all_names:
+            if n not in existing:
+                existing.append(n)
+        self._data["__order__"] = existing
+
+    def _save(self):
+        tmp = self._path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2)
+            os.replace(tmp, self._path)
+        except Exception as e:
+            print(f"  [watchlist] save failed: {e}")
+
+    # ── Public API ────────────────────────────────────────────────────────
+
+    def names(self) -> list[str]:
+        """All watchlist names in user-defined order."""
+        return list(self._data.get("__order__", []))
+
+    def get(self, name: str) -> list[str]:
+        return list(self._data.get(name, []))
+
+    def order(self) -> list[str]:
+        """Same as names() — the full ordered list."""
+        return self.names()
+
+    def set_order(self, ordered: list[str]):
+        """Persist a new display order. Only known watchlist names are kept."""
+        known = {k for k in self._data if k not in self._INTERNAL}
+        self._data["__order__"] = [n for n in ordered if n in known]
+        self._save()
+
+    def bar_names(self) -> list[str]:
+        """The first 3 entries in order — always shown on the bar."""
+        return self.names()[:3]
+
+    def save(self, name: str, symbols: list[str]):
+        """Create or overwrite a watchlist entry."""
+        is_new = name not in self._data or name in self._INTERNAL
+        self._data[name] = [s.upper() for s in symbols if s]
+        if is_new:
+            order = self._data.get("__order__", [])
+            if name not in order:
+                order.append(name)
+            self._data["__order__"] = order
+        self._save()
+
+    def delete(self, name: str):
+        self._data.pop(name, None)
+        order = self._data.get("__order__", [])
+        if name in order:
+            order.remove(name)
+        self._data["__order__"] = order
+        self._save()
+
+    def rename(self, old_name: str, new_name: str):
+        if old_name in self._data and new_name:
+            self._data[new_name] = self._data.pop(old_name)
+            order = self._data.get("__order__", [])
+            if old_name in order:
+                order[order.index(old_name)] = new_name
+            self._data["__order__"] = order
+            self._save()
 
 
 # ── Input helpers ─────────────────────────────────────────────────────────────
@@ -95,23 +225,61 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
     result_refresh: bool      = False
     result_export:  bool      = False
 
+    # Must be called BEFORE tk.Tk() so tkinter captures correct DPI-aware coordinates
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(2)  # per-monitor DPI aware
+    except Exception:
+        try:
+            from ctypes import windll
+            windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
     root = tk.Tk()
     root.title("📈  Select Tickers")
     root.configure(bg=CLR_BG)
     root.resizable(True, True)
-    try:
-        # Lock DPI scaling so font sizes don't shift when widgets change
-        from ctypes import windll
-        windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
 
     root.update_idletasks()
-    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    w = WINDOW_WIDTH
-    h = int(sh * WINDOW_HEIGHT)
-    x = (sw - w) // 2 if WINDOW_X is None else WINDOW_X
-    root.geometry(f"{w}x{h}+{x}+{WINDOW_Y}")
+    try:
+        import ctypes
+        work = ctypes.wintypes.RECT()
+        ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(work), 0)
+        work_w = work.right  - work.left
+        work_h = work.bottom - work.top
+        work_x = work.left
+        work_y = work.top
+       # print(f"[DEBUG GEOM] work area: {work_w}x{work_h} at ({work_x},{work_y})")
+    except Exception as e:
+        # print(f"[DEBUG GEOM] WorkArea failed: {e}")
+        work_w = root.winfo_screenwidth()
+        work_h = root.winfo_screenheight()
+        work_x = 0
+        work_y = 0
+        # Measure actual window decoration thickness (title bar + borders).
+        # We do this by letting tk render a tiny window, then reading the
+        # difference between the requested and actual outer size.
+    root.geometry("100x100+0+0")
+    root.update_idletasks()
+    # winfo_rooty gives the top of the CLIENT area; winfo_y is the outer top.
+    deco_h = root.winfo_rooty() - root.winfo_y()  # title-bar height in px
+    deco_w = root.winfo_rootx() - root.winfo_x()  # border width in px
+
+    # Safety floor in case the WM hasn't committed geometry yet
+    if deco_h < 1:
+        deco_h = 32
+    if deco_w < 1:
+        deco_w = 4
+
+    w = min(WINDOW_WIDTH, work_w - deco_w * 2)
+    h = work_h - WINDOW_Y - deco_h  # subtract real title-bar height
+    x = work_x + WINDOW_X
+    y = work_y + WINDOW_Y
+   # print(f"[DEBUG GEOM] deco {deco_w}x{deco_h} | setting geometry {w}x{h}+{x}+{y}")
+    root.geometry(f"{w}x{h}+{x}+{y}")
+    root.update_idletasks()
+   # print(f"[DEBUG GEOM] actual root size: {root.winfo_width()}x{root.winfo_height()} at ({root.winfo_x()},{root.winfo_y()})")
     root.minsize(500, 400)
 
     mono      = tkfont.Font(family="Consolas", size=MONO_FONT_SIZE)
@@ -143,6 +311,9 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
 
     root.config(menu=menubar)
 
+    # ── Watchlist manager (loads/saves tickers/watchlists.json) ──────────
+    _wl = WatchlistManager(db_path)
+
     # ── Header ────────────────────────────────────────────────────────────
     hdr = tk.Frame(root, bg=CLR_ACCENT, pady=12)
     hdr.pack(fill="x")
@@ -150,6 +321,544 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
              bg=CLR_ACCENT, fg="white", font=hdr_bold).pack()
     tk.Label(hdr, text="Choose tickers to chart",
              bg=CLR_ACCENT, fg="#D0EEFF", font=hdr_sub).pack()
+
+    # ── Watchlist bar ─────────────────────────────────────────────────────
+    # Rendered between header and summary. Preset buttons on the left,
+    # Preset buttons scroll horizontally. Save / Delete are pinned right.
+    # Layout: [  "Watchlists:" label | <── scrollable canvas ──> | Save | Delete  ]
+
+    # Two-row watchlist bar
+    # Row 1 (dark):   "Watchlists" label + Save + Delete  — always fully visible
+    # Row 2 (darker): scrollable preset buttons, scrollbar underneath when needed
+
+    wl_frame = tk.Frame(root, bg="#1A1A2E")
+    wl_frame.pack(fill="x")
+
+    # Forward-declared; defined after check_vars exist (needed for load/save)
+    _wl_load_fn   = [None]
+    _wl_save_fn   = [None]
+    _wl_delete_fn = [None]
+
+    # ── Row 1: label + controls ───────────────────────────────────────────
+    wl_row1 = tk.Frame(wl_frame, bg="#1A1A2E", pady=5, padx=14)
+    wl_row1.pack(fill="x")
+
+    tk.Label(
+        wl_row1, text="Watchlists",
+        bg="#1A1A2E", fg="#AAAACC", font=bold,
+    ).pack(side="left")
+
+    tk.Button(
+        wl_row1, text="\u2716  Delete\u2026",
+        bg="#4A2020", fg="#FFAAAA",
+        font=bold, relief="flat",
+        padx=12, pady=4, cursor="hand2",
+        activebackground="#7A1C1C",
+        command=lambda: _wl_delete_fn[0](),
+    ).pack(side="right", padx=(6, 0))
+
+    tk.Button(
+        wl_row1, text="\uff0b  Save current\u2026",
+        bg="#10B981", fg="white",
+        font=bold, relief="flat",
+        padx=12, pady=4, cursor="hand2",
+        activebackground="#0D9E6E",
+        command=lambda: _wl_save_fn[0](),
+    ).pack(side="right", padx=(6, 0))
+
+    tk.Frame(wl_frame, bg="#2A2A4E", height=1).pack(fill="x")  # divider
+
+    # ── Row 2: horizontally scrollable button bar + "More ▼" popup ────────
+    # The bar shows ALL watchlists as buttons in user-defined order.
+    # The first 3 are always visible without scrolling (top-of-order = bar slots 1-3).
+    # Users can scroll the bar left/right with the mousewheel to reveal more.
+    # "More ▼" opens a full searchable + reorderable popup.
+
+    wl_row2 = tk.Frame(wl_frame, bg="#12122A")
+    wl_row2.pack(fill="x")
+
+    # "» More ▼" button — always pinned to the right
+    _wl_more_btn = tk.Button(
+        wl_row2, text="  ≡  All  ▼  ",
+        bg="#1E1E3A", fg="#AAAACC",
+        font=bold, relief="flat",
+        padx=10, pady=8, cursor="hand2",
+        activebackground="#2A2A4E", activeforeground="#D0EEFF",
+    )
+    _wl_more_btn.pack(side="right", padx=(2, 6), pady=4)
+
+    # Scrollable canvas for the bar buttons
+    _wl_bar_canvas = tk.Canvas(wl_row2, bg="#12122A", highlightthickness=0, height=44)
+    _wl_bar_canvas.pack(side="left", fill="x", expand=True)
+
+    _wl_btn_frame = tk.Frame(_wl_bar_canvas, bg="#12122A")
+    _wl_bar_win   = _wl_bar_canvas.create_window((0, 0), window=_wl_btn_frame, anchor="nw")
+
+    def _wl_bar_scroll(event):
+        """Horizontal scroll of the watchlist bar on mousewheel."""
+        try:
+            bx = _wl_bar_canvas.winfo_rootx()
+            by = _wl_bar_canvas.winfo_rooty()
+            bw = _wl_bar_canvas.winfo_width()
+            bh = _wl_bar_canvas.winfo_height()
+            if not (bx <= event.x_root <= bx + bw and by <= event.y_root <= by + bh):
+                return
+        except Exception:
+            return
+        num = getattr(event, "num", 0)
+        delta = getattr(event, "delta", 0)
+        if num == 4:
+            _wl_bar_canvas.xview_scroll(-1, "units")
+        elif num == 5:
+            _wl_bar_canvas.xview_scroll(1, "units")
+        elif num == 6:
+            _wl_bar_canvas.xview_scroll(-1, "units")
+        elif num == 7:
+            _wl_bar_canvas.xview_scroll(1, "units")
+        elif delta:
+            _wl_bar_canvas.xview_scroll(int(-delta / 60), "units")
+
+    _wl_bar_canvas.bind("<MouseWheel>",  _wl_bar_scroll)
+    _wl_bar_canvas.bind("<Button-4>",    _wl_bar_scroll)
+    _wl_bar_canvas.bind("<Button-5>",    _wl_bar_scroll)
+    # Button-6/7 are Linux horizontal scroll — skip on Windows
+    try:
+        _wl_bar_canvas.bind("<Button-6>", _wl_bar_scroll)
+        _wl_bar_canvas.bind("<Button-7>", _wl_bar_scroll)
+    except Exception:
+        pass
+    _wl_btn_frame.bind("<MouseWheel>",   _wl_bar_scroll)
+    _wl_btn_frame.bind("<Button-4>",     _wl_bar_scroll)
+    _wl_btn_frame.bind("<Button-5>",     _wl_bar_scroll)
+
+    def _wl_bar_update_scroll(*_):
+        _wl_btn_frame.update_idletasks()
+        bbox = _wl_bar_canvas.bbox("all")
+        if bbox:
+            _wl_bar_canvas.configure(scrollregion=bbox)
+        _wl_bar_canvas.itemconfig(_wl_bar_win, height=_wl_bar_canvas.winfo_height())
+
+    _wl_btn_frame.bind("<Configure>", _wl_bar_update_scroll)
+    _wl_bar_canvas.bind("<Configure>", _wl_bar_update_scroll)
+
+    _wl_active_name = [None]
+    _wl_btn_refs: dict[str, tk.Button] = {}
+
+    def _wl_open_overflow_menu():
+        """
+        Full searchable + reorderable popup listing all watchlists.
+        Drag-and-drop OR arrow buttons to reorder. Order persists to JSON.
+        Bar always shows first 3 entries.
+        """
+        all_names = _wl.names()
+        if not all_names:
+            return
+
+        popup = tk.Toplevel(root)
+        popup.transient(root)
+        popup.configure(bg="#1A1A2E")
+        popup.attributes("-topmost", True)
+        _popup_open[0] = True
+
+        # ── Header ────────────────────────────────────────────────────────
+        hdr_p = tk.Frame(popup, bg="#00A4EF", pady=6, padx=14)
+        hdr_p.pack(fill="x")
+        tk.Label(hdr_p, text="All Watchlists",
+                 bg="#00A4EF", fg="white", font=bold).pack(side="left")
+
+        def _close_popup():
+            _popup_open[0] = False
+            popup.destroy()
+
+        tk.Button(hdr_p, text="✕", bg="#00A4EF", fg="white",
+                  font=bold, relief="flat", cursor="hand2",
+                  activebackground="#0082C8",
+                  command=_close_popup).pack(side="right")
+
+        def _toggle_maximise():
+            try:
+                state = popup.state()
+                if state == "zoomed":
+                    popup.state("normal")
+                else:
+                    popup.state("zoomed")
+            except Exception:
+                try:
+                    popup.attributes("-zoomed", not popup.attributes("-zoomed"))
+                except Exception:
+                    pass
+
+        tk.Button(hdr_p, text="⛶", bg="#00A4EF", fg="white",
+                  font=bold, relief="flat", cursor="hand2",
+                  activebackground="#0082C8",
+                  command=_toggle_maximise).pack(side="right", padx=(0, 4))
+
+        # ── Toolbar: search + reorder mode toggle ─────────────────────────
+        toolbar = tk.Frame(popup, bg="#1A1A2E", pady=6, padx=10)
+        toolbar.pack(fill="x")
+
+        tk.Label(toolbar, text="🔍", bg="#1A1A2E", fg="#AAAACC",
+                 font=bold).pack(side="left", padx=(0, 6))
+        filter_var = tk.StringVar()
+        filter_entry = tk.Entry(toolbar, textvariable=filter_var,
+                                font=mono, relief="flat", bg="#2A2A4E",
+                                fg="#D0EEFF", insertbackground="#D0EEFF",
+                                highlightthickness=1,
+                                highlightcolor=CLR_ACCENT,
+                                highlightbackground="#3A3A5E")
+        filter_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        filter_entry.focus_set()
+
+        # Mode toggle: "↕ Drag" or "▲▼ Arrows"
+        _reorder_mode = ["arrows"]   # "drag" or "arrows"
+        mode_btn = tk.Button(toolbar, text="↕  Drag to reorder",
+                             bg="#2A2A4E", fg="#AAAACC",
+                             font=bold, relief="flat",
+                             padx=10, pady=4, cursor="hand2",
+                             activebackground="#3A3A5E")
+        mode_btn.pack(side="right")
+
+        # ── Hint label ────────────────────────────────────────────────────
+        hint_var = tk.StringVar(value="▲▼ arrows to reorder  ·  top 3 always on bar")
+        hint_lbl = tk.Label(popup, textvariable=hint_var,
+                            bg="#0D0D22", fg="#555577", font=mono,
+                            anchor="w", padx=10, pady=3)
+        hint_lbl.pack(fill="x")
+
+        # ── Scrollable list ───────────────────────────────────────────────
+        list_outer_p = tk.Frame(popup, bg="#1A1A2E")
+        list_outer_p.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        vsb = ttk.Scrollbar(list_outer_p, orient="vertical")
+        vsb.pack(side="right", fill="y")
+
+        list_canvas = tk.Canvas(list_outer_p, bg="#1A1A2E",
+                                highlightthickness=0,
+                                yscrollcommand=vsb.set)
+        list_canvas.pack(side="left", fill="both", expand=True)
+        vsb.config(command=list_canvas.yview)
+
+        list_inner = tk.Frame(list_canvas, bg="#1A1A2E")
+        _list_win = list_canvas.create_window((0, 0), window=list_inner, anchor="nw")
+
+        def _update_scrollregion(*_):
+            list_canvas.update_idletasks()
+            bbox = list_canvas.bbox("all")
+            if bbox:
+                list_canvas.configure(scrollregion=bbox)
+
+        def _on_canvas_resize(event):
+            list_canvas.itemconfig(_list_win, width=event.width)
+            # Also re-sync scrollregion so scrollbar thumb reflects new height
+            popup.after(10, _update_scrollregion)
+
+        list_inner.bind("<Configure>", _update_scrollregion)
+        list_canvas.bind("<Configure>", _on_canvas_resize)
+
+        def _scroll_popup(event):
+            # Only scroll when mouse is over the list canvas area
+            try:
+                cx = list_canvas.winfo_rootx()
+                cy = list_canvas.winfo_rooty()
+                cw = list_canvas.winfo_width()
+                ch = list_canvas.winfo_height()
+                if not (cx <= event.x_root <= cx + cw and cy <= event.y_root <= cy + ch):
+                    return
+            except Exception:
+                pass
+            num   = getattr(event, "num", 0)
+            delta = getattr(event, "delta", 0)
+            if num == 4:
+                list_canvas.yview_scroll(-1, "units")
+            elif num == 5:
+                list_canvas.yview_scroll(1, "units")
+            elif delta:
+                list_canvas.yview_scroll(int(-delta / 120), "units")
+            return "break"
+
+        # bind_all on popup so every child widget (rows, labels, buttons) forwards scroll
+        popup.bind_all("<MouseWheel>", _scroll_popup)
+        popup.bind_all("<Button-4>",   _scroll_popup)
+        popup.bind_all("<Button-5>",   _scroll_popup)
+
+        def _cleanup_scroll_binds():
+            try:
+                popup.unbind_all("<MouseWheel>")
+                popup.unbind_all("<Button-4>")
+                popup.unbind_all("<Button-5>")
+            except Exception:
+                pass
+        popup.bind("<Destroy>", lambda e: _cleanup_scroll_binds())
+
+        # ── Working order (mutable; written to JSON on close/load) ────────
+        _working_order: list[str] = list(_wl.names())
+
+        # ── Drag state ────────────────────────────────────────────────────
+        _drag = {"active": False, "name": None, "start_y": 0,
+                 "ghost": None, "orig_idx": 0}
+
+        def _build_rows(filter_q=""):
+            """Rebuild the popup list from _working_order, applying optional filter."""
+            for w in list_inner.winfo_children():
+                w.destroy()
+
+            bar_set = set(_working_order[:3])
+            display = (_working_order if not filter_q
+                       else [n for n in _working_order
+                             if filter_q in n.lower()
+                             or any(filter_q in t.lower() for t in _wl.get(n))])
+
+            for i, name in enumerate(display):
+                tickers  = _wl.get(name)
+                preview  = ",  ".join(tickers[:5])
+                if len(tickers) > 5:
+                    preview += "…"
+                is_active = (name == _wl_active_name[0])
+                on_bar    = (name in bar_set)
+                bg = CLR_ACCENT if is_active else ("#1E1E3A" if i % 2 == 0 else "#16162E")
+
+                row = tk.Frame(list_inner, bg=bg, cursor="hand2")
+                row.pack(fill="x")
+
+                # ── Left side ─────────────────────────────────────────────
+                left_frame = tk.Frame(row, bg=bg)
+                left_frame.pack(side="left", fill="x", expand=True, pady=5)
+
+                if _reorder_mode[0] == "drag":
+                    # Drag handle
+                    handle = tk.Label(left_frame, text="≡", font=bold,
+                                      bg=bg, fg="#555577", cursor="fleur",
+                                      padx=6)
+                    handle.pack(side="left")
+
+                    def _make_drag_fns(n=name, r=row):
+                        def _drag_start(e):
+                            _drag["active"] = True
+                            _drag["name"]   = n
+                            _drag["start_y"] = e.y_root
+                            _drag["orig_idx"] = _working_order.index(n) if n in _working_order else 0
+                            r.config(relief="raised")
+                        def _drag_motion(e):
+                            if not _drag["active"] or _drag["name"] != n:
+                                return
+                            dy = e.y_root - _drag["start_y"]
+                            steps = dy // 36       # ~row height
+                            new_idx = max(0, min(len(_working_order) - 1,
+                                                 _drag["orig_idx"] + steps))
+                            if n in _working_order:
+                                cur = _working_order.index(n)
+                                if cur != new_idx:
+                                    _working_order.remove(n)
+                                    _working_order.insert(new_idx, n)
+                                    _build_rows(filter_var.get().strip().lower())
+                        def _drag_end(e):
+                            if _drag["active"] and _drag["name"] == n:
+                                _drag["active"] = False
+                                _wl.set_order(_working_order)
+                                _rebuild_wl_bar()
+                                _build_rows(filter_var.get().strip().lower())
+                        return _drag_start, _drag_motion, _drag_end
+
+                    ds, dm, de = _make_drag_fns()
+                    handle.bind("<ButtonPress-1>",   ds)
+                    handle.bind("<B1-Motion>",       dm)
+                    handle.bind("<ButtonRelease-1>", de)
+                else:
+                    # Arrow buttons
+                    arrows = tk.Frame(left_frame, bg=bg)
+                    arrows.pack(side="left", padx=(4, 0))
+
+                    def _make_move(n=name, delta=-1):
+                        def _move():
+                            if n not in _working_order:
+                                return
+                            idx = _working_order.index(n)
+                            new = max(0, min(len(_working_order) - 1, idx + delta))
+                            if new != idx:
+                                _working_order.remove(n)
+                                _working_order.insert(new, n)
+                                _wl.set_order(_working_order)
+                                _rebuild_wl_bar()
+                                _build_rows(filter_var.get().strip().lower())
+                        return _move
+
+                    tk.Button(arrows, text="▲", font=mono, fg="#AAAACC",
+                              bg=bg, activebackground="#2A2A5E",
+                              relief="flat", bd=0, cursor="hand2",
+                              padx=4, pady=0,
+                              command=_make_move(name, -1)).pack()
+                    tk.Button(arrows, text="▼", font=mono, fg="#AAAACC",
+                              bg=bg, activebackground="#2A2A5E",
+                              relief="flat", bd=0, cursor="hand2",
+                              padx=4, pady=0,
+                              command=_make_move(name, 1)).pack()
+
+                # Bar slot badge (1 / 2 / 3) for top-3 entries
+                if on_bar and not filter_q:
+                    slot = _working_order.index(name) + 1
+                    tk.Label(left_frame, text=f" #{slot} ",
+                             bg="#00A4EF", fg="white",
+                             font=mono, padx=3, pady=0).pack(side="left", padx=(4, 2))
+
+                marker = "▶  " if is_active else "    "
+                name_lbl = tk.Label(left_frame, text=marker + name,
+                                    bg=bg, fg="white" if is_active else "#D0EEFF",
+                                    font=bold, anchor="w")
+                name_lbl.pack(side="left")
+
+                # Right: ticker preview
+                tk.Label(row, text=preview,
+                         bg=bg, fg="#888899" if not is_active else "#D0EEFF",
+                         font=mono, anchor="e").pack(side="right", padx=(0, 12))
+
+                # Click row to load (but not drag handle / arrows)
+                def _load_and_close(n=name):
+                    _wl.set_order(_working_order)
+                    _popup_open[0] = False
+                    _wl_load_fn[0](n)
+                    popup.destroy()
+
+                for w in (row, name_lbl):
+                    w.bind("<Button-1>",   lambda e, fn=_load_and_close: fn())
+                    w.bind("<MouseWheel>", _scroll_popup)
+                    w.bind("<Button-4>",   _scroll_popup)
+                    w.bind("<Button-5>",   _scroll_popup)
+
+                # Hover
+                def _enter(e, w=row, b=bg, active=is_active):
+                    if not active:
+                        w.config(bg="#2A2A5E")
+                        for c in w.winfo_children():
+                            try: c.config(bg="#2A2A5E")
+                            except Exception: pass
+                def _leave(e, w=row, b=bg):
+                    w.config(bg=b)
+                    for c in w.winfo_children():
+                        try: c.config(bg=b)
+                        except Exception: pass
+                row.bind("<Enter>", _enter)
+                row.bind("<Leave>", _leave)
+
+        def _toggle_mode():
+            _reorder_mode[0] = "drag" if _reorder_mode[0] == "arrows" else "arrows"
+            if _reorder_mode[0] == "drag":
+                mode_btn.config(text="▲▼  Arrow reorder")
+                hint_var.set("Drag ≡ handle to reorder  ·  top 3 always on bar")
+            else:
+                mode_btn.config(text="↕  Drag to reorder")
+                hint_var.set("▲▼ arrows to reorder  ·  top 3 always on bar")
+            _build_rows(filter_var.get().strip().lower())
+
+        mode_btn.config(command=_toggle_mode)
+
+        def _on_filter(*_):
+            q = filter_var.get().strip().lower()
+            _build_rows(q)
+            if q:   # only jump to top when actively filtering
+                list_canvas.yview_moveto(0)
+
+        filter_var.trace_add("write", _on_filter)
+        _build_rows()
+
+        # ── Size and position ─────────────────────────────────────────────
+        popup.update_idletasks()
+        try:
+            import ctypes
+            work = ctypes.wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(work), 0)
+            work_bottom = work.bottom
+        except Exception:
+            work_bottom = root.winfo_screenheight() - 48
+
+        popup.geometry("100x100+0+0")
+        popup.update_idletasks()
+        popup_deco_h = max(popup.winfo_rooty() - popup.winfo_y(), 0)
+
+        rx = root.winfo_rootx()
+        rw = root.winfo_width()
+        bx = rx + 10
+        by = _wl_more_btn.winfo_rooty() + _wl_more_btn.winfo_height() + 2
+        popup_w = rw - 20
+        popup_h = work_bottom - by - popup_deco_h - 4
+
+        popup.geometry(f"{popup_w}x{popup_h}+{bx}+{by}")
+        popup.resizable(True, True)
+        popup.minsize(400, 200)
+
+        def _init_scrollregion():
+            """First-open only: set scrollregion and go to top."""
+            b = list_canvas.bbox("all")
+            if b:
+                list_canvas.configure(scrollregion=b)
+            list_canvas.yview_moveto(0)
+
+        def _sync_scrollregion(*_):
+            """Keep scrollregion in sync with content — never moves scroll position."""
+            b = list_canvas.bbox("all")
+            if b:
+                list_canvas.configure(scrollregion=b)
+
+        popup.after(50,  _init_scrollregion)
+        popup.after(150, _init_scrollregion)
+
+        # Configure fires on every window move/resize — only sync region, never jump to top
+        popup.bind("<Configure>", _sync_scrollregion)
+        popup.bind("<Escape>", lambda e: [_popup_open.__setitem__(0, False), popup.destroy()])
+
+        def _on_focus_out():
+            if popup.winfo_exists() and not filter_entry.focus_get():
+                _popup_open[0] = False
+                popup.destroy()
+        popup.bind("<FocusOut>", lambda e: root.after(100, _on_focus_out))
+
+    _wl_more_btn.config(command=_wl_open_overflow_menu)
+
+    def _rebuild_wl_bar():
+        """
+        Rebuild the scrollable button bar from the current order.
+        All watchlists appear; first 3 are visually highlighted as bar slots.
+        """
+        for w in _wl_btn_frame.winfo_children():
+            w.destroy()
+        _wl_btn_refs.clear()
+
+        all_names = _wl.names()
+        bar_names = all_names[:3]
+
+        for name in all_names:
+            is_active = (name == _wl_active_name[0])
+            on_bar    = (name in bar_names)
+            if is_active:
+                bg_col = CLR_ACCENT
+                fg_col = "white"
+            elif on_bar:
+                bg_col = "#1A3A5E"
+                fg_col = "#FFD580"
+            else:
+                bg_col = "#2A2A4E"
+                fg_col = "#D0EEFF"
+
+            slot_prefix = f"#{bar_names.index(name)+1} " if on_bar and not is_active else ""
+            btn = tk.Button(
+                _wl_btn_frame,
+                text=slot_prefix + name,
+                bg=bg_col, fg=fg_col,
+                font=bold, relief="flat",
+                padx=12, pady=8, cursor="hand2",
+                activebackground=CLR_ACCENT, activeforeground="white",
+            )
+            btn.config(command=lambda n=name: _wl_load_fn[0](n))
+            btn.pack(side="left", padx=(6, 0), pady=4)
+            _wl_btn_refs[name] = btn
+
+            # Forward mousewheel on buttons to bar canvas
+            btn.bind("<MouseWheel>", _wl_bar_scroll)
+            btn.bind("<Button-4>",   _wl_bar_scroll)
+            btn.bind("<Button-5>",   _wl_bar_scroll)
+
+        root.after(60, _wl_bar_update_scroll)
+
+    _rebuild_wl_bar()
 
     # ── Selected tickers summary bar ──────────────────────────────────────
     summary_frame = tk.Frame(root, bg="#E8F4FD", pady=6, padx=14)
@@ -245,7 +954,20 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
         canvas.configure(scrollregion=canvas.bbox("all"))
     inner.bind("<Configure>", _on_frame_resize)
 
+    _popup_open = [False]  # flag set True while overflow popup is visible
+
     def _scroll(event):
+        if _popup_open[0]:
+            return  # popup is active — it handles its own scroll
+        try:
+            cx = canvas.winfo_rootx()
+            cy = canvas.winfo_rooty()
+            cw = canvas.winfo_width()
+            ch = canvas.winfo_height()
+            if not (cx <= event.x_root <= cx + cw and cy <= event.y_root <= cy + ch):
+                return
+        except Exception:
+            return
         if event.num == 4:
             canvas.yview_scroll(-1, "units")
         elif event.num == 5:
@@ -791,7 +1513,7 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
 
     # ── Bottom bar ────────────────────────────────────────────────────────
     ctrl = tk.Frame(root, bg=CLR_BG, pady=10, padx=14)
-    ctrl.pack(fill="x")
+    ctrl.pack(side="bottom", fill="x")
 
     btn_cfg = dict(font=bold, relief="flat", bd=0, padx=12, pady=7, cursor="hand2")
 
@@ -813,6 +1535,198 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
         for v in check_vars.values():
             v.set(False)
         _sync_all_buttons()
+
+    # ── Watchlist load / save / delete ────────────────────────────────────
+
+    def _wl_load(name: str):
+        """Tick exactly the symbols in the named watchlist, clear everything else."""
+        symbols = set(_wl.get(name))
+        if not symbols:
+            return
+        for v in check_vars.values():
+            v.set(False)
+        for sym in _wl.get(name):
+            if sym not in check_vars:
+                _add_ticker_sym(sym, "")
+            else:
+                check_vars[sym].set(True)
+        _sync_all_buttons()
+        _set_filter("all")
+        search_var.set("")
+        # Highlight the active preset button, preserving bar-slot colours for others
+        _wl_active_name[0] = name
+        bar_names = _wl.names()[:3]
+        for n, b in _wl_btn_refs.items():
+            if n == name:
+                b.config(bg=CLR_ACCENT, fg="white")
+            elif n in bar_names:
+                b.config(bg="#1A3A5E", fg="#FFD580")
+            else:
+                b.config(bg="#2A2A4E", fg="#D0EEFF")
+        # Scroll the active button into view on the bar canvas
+        btn = _wl_btn_refs.get(name)
+        if btn:
+            def _scroll_to_btn():
+                try:
+                    bx = btn.winfo_x()
+                    bw = btn.winfo_width()
+                    total_w = _wl_btn_frame.winfo_reqwidth()
+                    if total_w > 0:
+                        frac = bx / total_w
+                        _wl_bar_canvas.xview_moveto(max(0.0, frac - 0.05))
+                except Exception:
+                    pass
+            root.after(80, _scroll_to_btn)
+
+    def _wl_save_dialog():
+        """Small modal: enter a name and save the current selection."""
+        selected = [sym for sym, v in check_vars.items() if v.get()]
+        if not selected:
+            return
+
+        dlg = tk.Toplevel(root)
+        dlg.title("Save Watchlist")
+        dlg.configure(bg=CLR_BG)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Save current selection as:",
+                 bg=CLR_BG, fg=CLR_TEXT, font=bold).pack(anchor="w", padx=20, pady=(16, 4))
+
+        name_var = tk.StringVar()
+        # Pre-fill if current selection exactly matches an existing watchlist
+        for n in _wl.names():
+            if set(_wl.get(n)) == set(selected):
+                name_var.set(n)
+                break
+
+        entry = tk.Entry(dlg, textvariable=name_var, font=mono,
+                         width=28, relief="flat",
+                         highlightthickness=1,
+                         highlightcolor=CLR_ACCENT,
+                         highlightbackground="#CCCCCC")
+        entry.pack(padx=20, pady=(4, 4))
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        tk.Label(dlg, text=f"  {', '.join(selected)}",
+                 bg=CLR_BG, fg=CLR_SUBTEXT, font=mono,
+                 wraplength=320, justify="left",
+                 padx=20).pack(anchor="w", padx=20, pady=(0, 12))
+
+        # Pin to top checkbox
+        pin_frame = tk.Frame(dlg, bg=CLR_BG)
+        pin_frame.pack(anchor="w", padx=20, pady=(0, 8))
+        pin_var = tk.BooleanVar(value=False)
+        pin_btn = tk.Button(pin_frame, text="☐", font=tick_font,
+                            fg="#AAAAAA", bg=CLR_BG, activebackground=CLR_BG,
+                            relief="flat", bd=0, cursor="hand2", padx=0, pady=0)
+        pin_btn.pack(side="left")
+        tk.Label(pin_frame, text="  Move to top of list (always on bar)",
+                 bg=CLR_BG, fg=CLR_SUBTEXT, font=bold).pack(side="left")
+
+        def _toggle_pin():
+            pin_var.set(not pin_var.get())
+            pin_btn.config(text="☑" if pin_var.get() else "☐",
+                           fg=CLR_ACCENT if pin_var.get() else "#AAAAAA")
+        pin_btn.config(command=_toggle_pin)
+
+        btn_row = tk.Frame(dlg, bg=CLR_BG)
+        btn_row.pack(fill="x", padx=20, pady=(0, 16))
+
+        def _do_save():
+            name = name_var.get().strip()
+            if not name:
+                return
+            _wl.save(name, selected)
+            if pin_var.get():
+                order = _wl.names()
+                if name in order:
+                    order.remove(name)
+                order.insert(0, name)
+                _wl.set_order(order)
+            _rebuild_wl_bar()
+            dlg.destroy()
+
+        tk.Button(btn_row, text="✓  Save",
+                  bg=CLR_ACCENT, fg="white",
+                  font=bold, relief="flat", padx=16, pady=6,
+                  cursor="hand2", command=_do_save).pack(side="right")
+        tk.Button(btn_row, text="Cancel",
+                  bg="#E5E7EB", fg=CLR_TEXT,
+                  font=bold, relief="flat", padx=12, pady=6,
+                  cursor="hand2", command=dlg.destroy).pack(side="right", padx=(0, 8))
+
+        dlg.bind("<Return>", lambda e: _do_save())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.update_idletasks()
+        px = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
+        py = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{px}+{py}")
+        dlg.wait_window()
+
+    def _wl_delete_dialog():
+        """Small modal: pick a watchlist to delete."""
+        names = _wl.names()
+        if not names:
+            return
+
+        dlg = tk.Toplevel(root)
+        dlg.title("Delete Watchlist")
+        dlg.configure(bg=CLR_BG)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="Delete which watchlist?",
+                 bg=CLR_BG, fg=CLR_TEXT, font=bold,
+                 padx=20, pady=12).pack(anchor="w", padx=20, pady=(16, 0))
+
+        chosen_var = tk.StringVar(value=names[0])
+        for name in names:
+            symbols_preview = ", ".join(_wl.get(name)[:6])
+            if len(_wl.get(name)) > 6:
+                symbols_preview += "…"
+            row = tk.Frame(dlg, bg=CLR_BG)
+            row.pack(fill="x", padx=20, pady=2)
+            tk.Radiobutton(
+                row, variable=chosen_var, value=name,
+                bg=CLR_BG, activebackground=CLR_BG,
+                selectcolor="#D0EEFF",
+            ).pack(side="left")
+            tk.Label(row, text=f"{name}  ", bg=CLR_BG, fg=CLR_ACCENT,
+                     font=bold).pack(side="left")
+            tk.Label(row, text=symbols_preview, bg=CLR_BG,
+                     fg=CLR_SUBTEXT, font=mono).pack(side="left")
+
+        btn_row = tk.Frame(dlg, bg=CLR_BG)
+        btn_row.pack(fill="x", padx=20, pady=(12, 16))
+
+        def _do_delete():
+            _wl.delete(chosen_var.get())
+            _rebuild_wl_bar()
+            dlg.destroy()
+
+        tk.Button(btn_row, text="✖  Delete",
+                  bg="#EF4444", fg="white",
+                  font=bold, relief="flat", padx=16, pady=6,
+                  cursor="hand2", command=_do_delete).pack(side="right")
+        tk.Button(btn_row, text="Cancel",
+                  bg="#E5E7EB", fg=CLR_TEXT,
+                  font=bold, relief="flat", padx=12, pady=6,
+                  cursor="hand2", command=dlg.destroy).pack(side="right", padx=(0, 8))
+
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.update_idletasks()
+        px = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
+        py = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{px}+{py}")
+        dlg.wait_window()
+
+    # Wire the forward refs so the bar buttons can call these
+    _wl_load_fn[0]   = _wl_load
+    _wl_save_fn[0]   = _wl_save_dialog
+    _wl_delete_fn[0] = _wl_delete_dialog
+    _rebuild_wl_bar()   # rebuild now that functions are live
 
     tk.Button(ctrl, text="✔  Select All", bg="#10B981", fg=CLR_BTN_FG,
               activebackground="#0D9E6E",
@@ -857,6 +1771,7 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
         _saved_geometry = root.geometry()
 
         hdr.pack_forget()
+        wl_frame.pack_forget()
         summary_frame.pack_forget()
         toggle_frame.pack_forget()
         search_frame.pack_forget()
@@ -956,6 +1871,7 @@ def pick_tickers(db_path: str, _run_state: dict = None, prefs_callback=None) -> 
         log_text.delete("1.0", "end")
         status_title_var.set("Loading…")
         hdr.pack(fill="x")
+        wl_frame.pack(fill="x")
         summary_frame.pack(fill="x")
         toggle_frame.pack(fill="x")
         search_frame.pack(fill="x")
@@ -1021,7 +1937,7 @@ def _manual_entry_fallback() -> tuple[list[str], int, bool, bool]:
     root = tk.Tk()
     root.title("Enter Tickers")
     root.configure(bg=CLR_BG)
-    root.resizable(False, False)
+    root.resizable(True, True)
     root.geometry("440x220")
     root.eval("tk::PlaceWindow . center")
 
