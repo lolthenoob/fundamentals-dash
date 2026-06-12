@@ -1,5 +1,33 @@
 # Changelog — Fundamentals Dashboard
 
+## [v0.1.4] — 2026-06-12
+
+### Added
+- **Watchlist bar is now horizontally scrollable** — all watchlists appear as
+  buttons; scroll left/right with the mousewheel to reveal more
+- **Order-based bar slots** — the first 3 watchlists in your defined order are
+  always visible leftmost, marked with #1 #2 #3 badges
+- **Reorder popup (≡ All ▼)** — full searchable list of all watchlists with two
+  reorder modes: ▲▼ arrow buttons or ↕ drag-handle; order saves immediately
+- **"Move to top" checkbox in Save dialog** — tick it when saving a watchlist to
+  pin it to bar slot #1
+- **Maximise button (⛶)** on the watchlist popup header
+
+### Changed
+- Replaced the pin/overflow system with a simpler user-defined order stored as
+  `__order__` in `watchlists.json` — bar always shows top 3 from that order
+- Chart style preferences (line vs bar) added in v0.1.3 now accessible via
+  Edit → Preferences → Chart Preferences
+
+### Fixed
+- Watchlist order not persisting across sessions — loader was uppercasing
+  watchlist names in `__order__`, breaking the match on reload
+- Popup mousewheel scroll teleporting back to top on every window move/resize
+- Scrollbar thumb staying stationary while content scrolled
+- Scroll not working on row widgets inside the popup (now uses `bind_all`)
+- Windows crash on startup — `Button-6` / `Button-7` bindings are Linux-only
+  and now wrapped in try/except
+
 ## [0.1.3] - 2026-06-01
 
 ### Added
